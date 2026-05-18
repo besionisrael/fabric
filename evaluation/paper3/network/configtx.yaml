@@ -98,7 +98,6 @@ Orderer: &OrdererDefaults
     Writers:
       Type: ImplicitMeta
       Rule: "ANY Writers"
-      Rule: "ANY Writers"
     Admins:
       Type: ImplicitMeta
       Rule: "MAJORITY Admins"
@@ -123,7 +122,9 @@ Channel: &ChannelDefaults
     <<: *ChannelCapabilities
 
 Profiles:
-  ThreeOrdererGenesis:
+  # Fabric 2.5+ channel profile — used directly with configtxgen to produce
+  # the channel genesis block (no separate system-channel genesis).
+  DirectedTraceabilityChannel:
     <<: *ChannelDefaults
     Orderer:
       <<: *OrdererDefaults

@@ -15,37 +15,17 @@ echo "=== Generating crypto material (cryptogen) ==="
 cryptogen generate --config=crypto-config.yaml --output=crypto-config
 echo "  → crypto-config/ created"
 
-echo "=== Generating genesis block ==="
+echo "=== Generating channel genesis block (Fabric 2.5+ — no system channel) ==="
 export FABRIC_CFG_PATH="$SCRIPT_DIR"
 configtxgen \
-    -profile ThreeOrgsOrdererGenesis \
-    -channelID system-channel \
-    -outputBlock channel-artifacts/genesis.block
-echo "  → channel-artifacts/genesis.block"
-
-echo "=== Generating channel transaction ==="
-configtxgen \
-    -profile TwoOrgsChannel \
+    -profile DirectedTraceabilityChannel \
     -channelID paper3channel \
-    -outputCreateChannelTx channel-artifacts/paper3channel.tx
-echo "  → channel-artifacts/paper3channel.tx"
-
-echo "=== Generating anchor peer transactions ==="
-configtxgen \
-    -profile TwoOrgsChannel \
-    -channelID paper3channel \
-    -outputAnchorPeersUpdate channel-artifacts/Org1MSPanchors.tx \
-    -asOrg Org1MSP
-configtxgen \
-    -profile TwoOrgsChannel \
-    -channelID paper3channel \
-    -outputAnchorPeersUpdate channel-artifacts/Org2MSPanchors.tx \
-    -asOrg Org2MSP
-echo "  → anchor peer transactions"
+    -outputBlock channel-artifacts/paper3channel.block
+echo "  → channel-artifacts/paper3channel.block"
 
 echo ""
 echo "=== Artifacts summary ==="
-find channel-artifacts crypto-config -maxdepth 2 -name "*.block" -o -name "*.tx" \
+find channel-artifacts crypto-config -maxdepth 2 -name "*.block" \
     | sort | sed 's/^/  /'
 echo ""
 echo "Done. Run 'docker compose -f docker-compose-base.yaml up -d' next."
