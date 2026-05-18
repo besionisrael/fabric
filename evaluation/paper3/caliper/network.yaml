@@ -1,0 +1,71 @@
+name: paper3-network
+version: "2.0.0"
+
+caliper:
+  blockchain: fabric
+
+channels:
+  - channelName: paper3channel
+    contracts:
+      - id: directed
+        version: "1.0"
+        language: golang
+        path: ../../../../integration/chaincode/directed
+        metapath: ../../../../integration/chaincode/directed
+        init:
+          requiredEndorsement:
+            type: ImplicitMeta
+            rule: ANY
+
+organizations:
+  - mspid: Org1MSP
+    identities:
+      certificates:
+        - name: admin
+          clientPrivateKey:
+            path: ../network/crypto-config/peerOrganizations/org1.example.com/users/Admin@org1.example.com/msp/keystore/priv_sk
+          clientSignedCert:
+            path: ../network/crypto-config/peerOrganizations/org1.example.com/users/Admin@org1.example.com/msp/signcerts/Admin@org1.example.com-cert.pem
+        # Five simulated agents; each holds a distinct Fabric identity.
+        # Used for C_global load tests (MaxConcurrent = 3, 5 competing agents).
+        - name: agent1
+          clientPrivateKey:
+            path: ../network/crypto-config/peerOrganizations/org1.example.com/users/User1@org1.example.com/msp/keystore/priv_sk
+          clientSignedCert:
+            path: ../network/crypto-config/peerOrganizations/org1.example.com/users/User1@org1.example.com/msp/signcerts/User1@org1.example.com-cert.pem
+        - name: agent2
+          clientPrivateKey:
+            path: ../network/crypto-config/peerOrganizations/org1.example.com/users/User2@org1.example.com/msp/keystore/priv_sk
+          clientSignedCert:
+            path: ../network/crypto-config/peerOrganizations/org1.example.com/users/User2@org1.example.com/msp/signcerts/User2@org1.example.com-cert.pem
+        - name: agent3
+          clientPrivateKey:
+            path: ../network/crypto-config/peerOrganizations/org1.example.com/users/User3@org1.example.com/msp/keystore/priv_sk
+          clientSignedCert:
+            path: ../network/crypto-config/peerOrganizations/org1.example.com/users/User3@org1.example.com/msp/signcerts/User3@org1.example.com-cert.pem
+        - name: agent4
+          clientPrivateKey:
+            path: ../network/crypto-config/peerOrganizations/org1.example.com/users/User4@org1.example.com/msp/keystore/priv_sk
+          clientSignedCert:
+            path: ../network/crypto-config/peerOrganizations/org1.example.com/users/User4@org1.example.com/msp/signcerts/User4@org1.example.com-cert.pem
+        - name: agent5
+          clientPrivateKey:
+            path: ../network/crypto-config/peerOrganizations/org1.example.com/users/User5@org1.example.com/msp/keystore/priv_sk
+          clientSignedCert:
+            path: ../network/crypto-config/peerOrganizations/org1.example.com/users/User5@org1.example.com/msp/signcerts/User5@org1.example.com-cert.pem
+    connectionProfile:
+      path: ../network/connection-org1.yaml
+      discover: true
+
+peers:
+  - endpoint: peer0.org1.example.com:7051
+    tlsCACerts:
+      path: ../network/crypto-config/peerOrganizations/org1.example.com/tlsca/tlsca.org1.example.com-cert.pem
+  - endpoint: peer1.org1.example.com:9051
+    tlsCACerts:
+      path: ../network/crypto-config/peerOrganizations/org1.example.com/tlsca/tlsca.org1.example.com-cert.pem
+
+orderers:
+  - endpoint: orderer0.example.com:7050
+    tlsCACerts:
+      path: ../network/crypto-config/ordererOrganizations/example.com/tlsca/tlsca.example.com-cert.pem

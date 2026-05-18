@@ -1,0 +1,523 @@
+% ============================================================
+%  §IV  Implementation
+%  Paper 3 — Constraint-Aware Ordering for Directed Traceability
+%  ÉTS PhD / ACM Distributed Ledger Technologies, Autumn 2026
+% ============================================================
+
+\section{Implementation}
+\label{sec:implementation}
+
+We implemented the three architectures compared in the evaluation on top of
+Hyperledger Fabric~v2.5, the de-facto reference platform for permissioned
+blockchains.  The codebase consists of four independently deployable
+components: a directed-traceability chaincode that encodes the resource
+lifecycle, a use-case-agnostic constraint layer embedded in the Raft orderer
+(\arch{M_D} endogenous), a lightweight HTTP coordinator paired with a standard
+Fabric network (\arch{M_D} exogenous, ZooKeeper baseline), and a Caliper
+workload driver that runs all three variants under identical network conditions.
+The total implementation adds approximately 3\,200 lines of Go and
+400 lines of JavaScript to the Fabric tree; no modifications to the Fabric peer
+or the gossip/delivery layers are required.
+
+%-------------------------------------------------------------
+\subsection{Directed-Traceability Chaincode}
+\label{subsec:impl-chaincode}
+
+The chaincode (\texttt{integration/chaincode/directed}) implements the
+resource lifecycle defined in Paper~2:
+\textsc{RegisterResource}, \textsc{Transfer}, \textsc{Use}, \textsc{Publish},
+and \textsc{Revoke}.  Each resource is stored under its primary key as a JSON
+object carrying an identifier, type, current holder, subset-group membership,
+usage conditions (including $K_\text{max}$), and an append-only trace log.
+
+\paragraph{Constraint partitioning.}
+The three usage constraints are enforced at different layers depending on their
+scope:
+\begin{itemize}
+  \item \textbf{\(C_\text{auth}\)}: the proposing agent must be the current
+    holder.  This is a \emph{local} constraint verifiable from the resource's
+    own state; the chaincode enforces it by comparing the proposal creator
+    identity against the stored holder at endorsement time.
+  \item \textbf{\(C_\text{excl}\)}: at most one holder per resource at any
+    instant.  Again local; the chaincode rejects any \textsc{Transfer} that
+    would violate exclusivity.
+  \item \textbf{\(C_\text{global}\)}: at most $K_\text{max}$ distinct agents
+    may simultaneously hold resources within the same \emph{SubsetGroup}.
+    This is a \emph{global} constraint: its evaluation requires a view of the
+    concurrent holder set across \emph{all} resources in the group, which is
+    distributed across ledger state entries and cannot be evaluated atomically
+    by a single chaincode simulation.  It is therefore the sole constraint
+    delegated to the orderer under \arch{M_D} endogenous.
+\end{itemize}
+
+This partitioning is the concrete realisation of the structural observation in
+Paper~2, Theorem~2: $C_\text{global}$ is the constraint for which a
+chaincode-only (\arch{M_L}) architecture produces a positive Intra-block
+Violation Rate (IVR), because two conflicting transactions can be endorsed
+simultaneously against an identical stale view.
+
+\paragraph{World-state query function.}
+To support the Init operation of Definition~1 (\S\ref{sec:model}), the
+chaincode exposes a read-only function \textsc{GetAllResources}.  This function
+performs a range scan over the primary-key space (lexicographic range
+$[\texttt{0x20},\texttt{0x7E}]$, i.e.\ printable ASCII) and returns all
+stored resources as a JSON array.  Composite-key entries, which Fabric stores
+with a null-byte prefix, are excluded from this range and therefore not
+returned.  The orderer uses this function to materialise the initial constraint
+cache without replaying the block log (\S\ref{subsec:impl-snapshot}).
+
+%-------------------------------------------------------------
+\subsection{Generic Constraint Interface}
+\label{subsec:impl-interface}
+
+The orderer extension is designed to be \emph{use-case agnostic}: the
+constraint layer knows nothing about biobank specimens, material-transfer
+agreements, or any other domain.  Callers supply a concrete implementation of
+the \texttt{Evaluator} interface, which encodes the constraint set $\mathcal{C}$
+for their specific use case.
+
+\paragraph{Core types.}
+The \texttt{constraint} package (\texttt{orderer/consensus/etcdraft/constraint})
+exposes three main abstractions:
+
+\begin{itemize}
+  \item \textbf{\texttt{CacheState}} — an opaque interface representing the
+    constraint-relevant projection $\pi(S_\text{world})$ of the ledger world
+    state.  It carries a single method \texttt{Clone()}, which produces a
+    deep copy for use as the speculative state.
+
+  \item \textbf{\texttt{TxView}} — the constraint-relevant projection of a
+    single transaction envelope: its identifier \texttt{TxID}, the chaincode
+    function name \texttt{Function}, its positional arguments \texttt{Args},
+    and the channel identifier.  Parsing a raw Fabric envelope into a
+    \texttt{TxView} is delegated to a \texttt{TxParser} supplied by each
+    \texttt{Evaluator} implementation.
+
+  \item \textbf{\texttt{Evaluator}} — the central interface, corresponding to
+    Definition~1 of \S\ref{sec:model}:
+    \begin{description}
+      \item[\texttt{Init(snapshot)}] builds the initial stable cache state
+        from a point-in-time world-state snapshot (§\ref{subsec:impl-snapshot}).
+      \item[\texttt{Evaluate(s, tx)}] implements $\mathrm{Conf}(s, u_t)$:
+        returns \emph{true} iff transaction \texttt{tx} is admissible in state
+        \texttt{s}, i.e.\ all constraints in $\mathcal{C}$ are satisfied.
+        It must not modify \texttt{s}.
+      \item[\texttt{Apply(s, tx)}] computes $\delta(s, \mathrm{tx})$: the
+        next cache state obtained by advancing \texttt{s} with an admitted
+        transaction.  Called immediately after \texttt{Evaluate} returns
+        \emph{true}.
+      \item[\texttt{TxParser()}] returns the \texttt{TxParser} for this
+        evaluator, used to extract a \texttt{TxView} from each raw envelope
+        before \texttt{Evaluate} is called.
+    \end{description}
+\end{itemize}
+
+\paragraph{WorldStateSnapshot interface.}
+\begin{verbatim}
+type WorldStateSnapshot interface {
+    GetByRange(namespace, startKey, endKey string) ([]KeyValue, error)
+}
+\end{verbatim}
+This interface abstracts the source of the initial world state consumed by
+\texttt{Init}.  Decoupling the query mechanism from the evaluator enables
+testing with in-process fakes while deploying with the live peer-endorsed
+implementation described in \S\ref{subsec:impl-snapshot}.
+
+%-------------------------------------------------------------
+\subsection{Stable/Speculative Cache Management}
+\label{subsec:impl-cache}
+
+The \texttt{StateManager} struct implements the stable/speculative state pair
+of Definition~2.  It is the only object in the orderer that calls
+\texttt{Evaluator} methods; no other code in the chain touches the cache
+directly.
+
+\paragraph{Lifecycle.}
+Four operations map directly onto the abstract operations of Definition~1:
+\begin{enumerate}
+  \item \textbf{Init} (called once at construction time): invokes
+    \texttt{evaluator.Init(snapshot)} to build the initial $s_\text{stable}$
+    and sets $s_\text{spec} = s_\text{stable}.\texttt{Clone()}$.
+  \item \textbf{BeginBatch}: resets $s_\text{spec} \leftarrow
+    s_\text{stable}.\texttt{Clone()}$, satisfying invariant~I2 of
+    Definition~2 at the start of each block construction cycle.
+  \item \textbf{ProcessBatch} (Algorithm~1): iterates over the envelope
+    batch.  For each envelope the \texttt{TxParser} extracts a
+    \texttt{TxView}; envelopes that do not yield a \texttt{TxView} (e.g.\
+    configuration transactions) are admitted unconditionally.  For chaincode
+    invocations, \texttt{Evaluate}$(s_\text{spec}, \mathrm{tx})$ is called.
+    On \emph{true}, the envelope is admitted and $s_\text{spec}
+    \leftarrow \texttt{Apply}(s_\text{spec}, \mathrm{tx})$ advances the
+    speculative state.  On \emph{false}, the envelope is rejected and
+    $s_\text{spec}$ is unchanged.
+  \item \textbf{Commit}: promotes $s_\text{stable} \leftarrow s_\text{spec}$
+    after the Raft quorum has confirmed the block.  A follower guard —
+    \texttt{if !inBatch \{ return \}} — makes \texttt{Commit} a no-op on
+    follower nodes that commit blocks received from the leader but never
+    ran \texttt{BeginBatch}; this ensures invariant~I3 is not violated
+    on the follower path.
+  \item \textbf{Rollback}: restores $s_\text{spec} \leftarrow
+    s_\text{stable}.\texttt{Clone()}$ on Raft-round failure, discarding the
+    in-flight speculative state.
+\end{enumerate}
+
+\paragraph{Concurrency model.}
+The block construction goroutine is the sole writer of the stable/speculative
+pair under condition~C2 (Proposition~1): batch evaluation is strictly
+sequential, one batch at a time.  The only concurrent caller is the Raft apply
+goroutine, which calls \texttt{Commit} or \texttt{Rollback} after a consensus
+round.  A single mutex guards this promotion path; no lock is held during
+\texttt{Evaluate} or \texttt{Apply}.
+
+%-------------------------------------------------------------
+\subsection{World-State Snapshot via Peer Endorser}
+\label{subsec:impl-snapshot}
+
+The Init operation of Definition~1 requires materialising $\pi(S_\text{world})$
+— the constraint-relevant projection of the current ledger state — at orderer
+startup.  A naive approach would replay the block log from genesis, applying
+the state-transition function $\delta$ to each committed transaction.  This
+approach is proportional in cost to the \emph{log length} rather than the
+\emph{state size}, and produces the correct result only for constraints that
+depend on the net effect of the full history (rather than the current state).
+
+We instead implement Init by querying a trusted peer's world state directly,
+using Fabric's gRPC endorser protocol.  The orderer constructs a
+\textsc{ProcessProposal} request invoking the directed chaincode's
+\textsc{GetAllResources} function, sends it to a designated \emph{reader peer},
+and parses the JSON array response.  The result represents the exact current
+world state at the instant of the query, regardless of log length or the
+presence of superseded intermediate states.  This design matches the description
+in \S\ref{subsec:model-init}: Init takes a snapshot $\pi(S_\text{world})$, not
+a block iterator.
+
+\paragraph{PeerEndorserSnapshot.}
+The concrete implementation lives in the \texttt{peersnapshot} package
+(\texttt{orderer/consensus/etcdraft/constraint/peersnapshot}).  It implements
+the \texttt{WorldStateSnapshot} interface through a single
+\texttt{PeerEndorserSnapshot} struct that wraps a persistent gRPC connection
+to the trusted peer:
+\begin{verbatim}
+func (p *PeerEndorserSnapshot) GetByRange(
+        namespace, _, _ string) ([]KeyValue, error) {
+    // Build ChaincodeInvocationSpec{GetAllResources}
+    // Sign with reader identity (ECDSA, DER-encoded)
+    // ProcessProposal → parse JSON array response
+    // Return []KeyValue{Key: resource.ID, Value: raw JSON}
+}
+\end{verbatim}
+The namespace parameter selects the chaincode to query; the start/end key
+bounds are not forwarded to the peer, since \textsc{GetAllResources} returns
+all primary-key entries unconditionally.
+
+\paragraph{Reader identity.}
+The orderer's own MSP identity (OrdererMSP) is not a member of application
+channel policies; it cannot endorse chaincode proposals.  We therefore
+configure a dedicated \emph{reader identity}: a regular application MSP
+certificate and private key whose holder has read access to the channel.
+The orderer loads this identity from the file system at startup (paths given by
+environment variables \texttt{FABRIC\_CONSTRAINT\_READER\_CERT} and
+\texttt{FABRIC\_CONSTRAINT\_READER\_KEY}) and uses it exclusively to sign the
+\textsc{GetAllResources} proposal.  The reader identity carries no channel write
+privileges and is used only at startup.  The proposal is signed with
+SHA-256~+~ECDSA and the signature is DER-encoded in-process, without invoking
+the Fabric MSP stack.
+
+\paragraph{Configuration.}
+The peer snapshot subsystem is configured via six environment variables on
+the orderer process:
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Variable & Purpose \\
+\midrule
+\texttt{FABRIC\_CONSTRAINT\_PEER\_ADDR}   & Peer address (\texttt{host:port}) \\
+\texttt{FABRIC\_CONSTRAINT\_PEER\_TLSCA}  & Path to PEM TLS CA certificate \\
+\texttt{FABRIC\_CONSTRAINT\_READER\_CERT} & Path to PEM reader certificate \\
+\texttt{FABRIC\_CONSTRAINT\_READER\_KEY}  & Path to PEM reader private key \\
+\texttt{FABRIC\_CONSTRAINT\_READER\_MSP}  & Reader MSP identifier \\
+\texttt{FABRIC\_CONSTRAINT\_CHAINCODE}    & Chaincode name (default: \texttt{directed}) \\
+\bottomrule
+\end{tabular}
+\end{center}
+Per-channel activation is controlled by the comma-separated variable
+\texttt{FABRIC\_CONSTRAINT\_CHANNELS}: channels not listed in this variable
+use the standard Fabric pipeline unchanged, preserving full backwards
+compatibility.
+
+%-------------------------------------------------------------
+\subsection{Biobank Evaluator (\(C_\text{global}\) Instantiation)}
+\label{subsec:impl-evaluator}
+
+The \texttt{biobank} package
+(\texttt{orderer/consensus/etcdraft/constraint/biobank}) is the concrete
+instantiation of \texttt{Evaluator} for the directed-traceability use case.
+It encodes only $C_\text{global}$; $C_\text{auth}$ and $C_\text{excl}$ are
+local constraints already enforced by the chaincode at endorsement time and
+need not be re-evaluated by the orderer.
+
+\paragraph{Cache structure.}
+The \texttt{BioankCacheState} maintains two maps:
+\begin{itemize}
+  \item \textbf{\texttt{resources}}: $\text{resourceID} \to (
+    \text{currentHolder},\ \text{subsetGroup},\ K_\text{max},\ \text{status})$
+    — the constraint-relevant projection of each resource.
+  \item \textbf{\texttt{groups}}: $\text{subsetGroup} \to (\text{Holders},\
+    K_\text{max})$ — the concurrent holder set and limit for each group.
+    $|\text{Holders}|$ is the quantity directly compared against $K_\text{max}$
+    during evaluation.
+\end{itemize}
+\texttt{Clone()} performs a full deep copy of both maps, including the
+\texttt{Holders} set for each group, so that the speculative copy is
+entirely independent of the stable copy.
+
+\paragraph{Init.}
+\texttt{BioankEvaluator.Init} calls \texttt{snapshot.GetByRange("directed","","")}
+to obtain all resources, then projects each \emph{active} resource with a
+non-empty \texttt{SubsetGroup} and a positive $K_\text{max}$ into the two maps.
+Resources in terminal states (\texttt{inactive}) and resources without a group
+or a concurrency limit are ignored, because they do not affect $C_\text{global}$.
+
+\paragraph{Evaluate.}
+Only \textsc{RegisterResource} and \textsc{Transfer} transactions affect the
+concurrent holder count and therefore undergo $C_\text{global}$ evaluation.
+All other functions (\textsc{Use}, \textsc{Publish}, \textsc{Revoke}) are
+admitted unconditionally by the evaluator (they may still be rejected by the
+chaincode).
+
+For a \textsc{Transfer} of resource $r$ to agent $a$:
+\[
+  \mathrm{Conf}(s,\, \textsc{Transfer}(r, a))
+  \;=\;
+  \begin{cases}
+    1 & \text{if } a \in \mathrm{Holders}(s,\, r.\text{group}) \\
+    1 & \text{if } |\mathrm{Holders}(s,\, r.\text{group})| + 1 \leq K_\text{max} \\
+    0 & \text{otherwise}
+  \end{cases}
+\]
+If the target agent already holds another resource in the same group, the
+holder count does not increase and the transfer is unconditionally admitted.
+Otherwise, the count after admission must not exceed $K_\text{max}$.
+
+For a \textsc{RegisterResource} of a new resource in group $g$ with limit
+$K_\text{max}$ by agent $a$, the same logic applies with the registering agent
+as the initial holder.
+
+\paragraph{Apply.}
+After a \textsc{Transfer} is admitted, \texttt{Apply} updates both maps:
+(i)~it removes the previous holder from the group's \texttt{Holders} set
+\emph{only if} they hold no other active resource in the same group, and
+(ii)~it adds the new holder.  After a \textsc{Revoke} or \textsc{Publish}
+the resource is marked inactive and its holder is similarly removed.
+
+The \texttt{removeHolderFromGroup} helper scans all entries in
+\texttt{resources} to determine whether the departing holder retains any
+other resource in the same group before removing them from \texttt{Holders}.
+This scan is bounded by the number of resources in the cache, which is at most
+the total number of active resources in the channel — typically small enough to
+run synchronously in the block construction goroutine.
+
+\paragraph{TxParser.}
+\texttt{BioankTxParser.Parse} unwraps the five-layer Fabric envelope hierarchy
+(Envelope → Payload → Transaction → TransactionAction →
+ChaincodeInvocationSpec) using Protocol Buffer unmarshalling to extract the
+chaincode function name and its positional arguments as raw byte slices.
+Configuration transactions (channel header type $\neq$ \textsc{EndorserTransaction})
+return \texttt{nil}, causing the envelope to be admitted unconditionally.
+
+%-------------------------------------------------------------
+\subsection{Integration into the Raft Orderer}
+\label{subsec:impl-raft}
+
+The constraint layer is integrated into Fabric's \texttt{etcdraft.Chain} via
+four targeted hook points.  No changes are made to the Raft consensus protocol
+itself, the block storage layer, or the endorsement pipeline.
+
+\paragraph{Chain extension.}
+The \texttt{Chain} struct acquires a single new field:
+\begin{verbatim}
+constraintMgr constraintManager
+\end{verbatim}
+where \texttt{constraintManager} is a minimal interface exposing
+\texttt{BeginBatch}, \texttt{ProcessBatch}, \texttt{Commit}, and
+\texttt{Rollback}.  When this field is \texttt{nil} (the default), every hook
+is a no-op and the chain behaves identically to a stock Fabric orderer.
+The nil-check idiom preserves the standard pipeline with zero overhead for
+channels that do not activate constraint-aware ordering.
+
+\paragraph{Hook 1 — Block proposal (\texttt{propose}).}
+The existing \texttt{propose} function, called by the block construction
+goroutine immediately before proposing a new block to Raft, is extended with:
+\begin{verbatim}
+batch = c.filterBatch(batch)
+if len(batch) == 0 { continue }
+\end{verbatim}
+\texttt{filterBatch} calls \texttt{BeginBatch} (cloning stable into speculative)
+and then \texttt{ProcessBatch} (Algorithm~1), returning only the admitted
+envelope subset.  If the entire batch is rejected, block proposal is skipped
+for that cycle.  This hook implements condition~C2 of Proposition~1:
+\texttt{ProcessBatch} is the unique call site of the evaluator within each
+Raft round, ensuring sequential cache access.
+
+\paragraph{Hook 2 — Block commit (\texttt{writeBlock}).}
+Immediately after \texttt{support.WriteBlock} writes the confirmed block to
+the ledger, the hook
+\begin{verbatim}
+if c.constraintMgr != nil { c.constraintMgr.Commit() }
+\end{verbatim}
+promotes $s_\text{spec}$ to $s_\text{stable}$.  Placement directly after
+\texttt{WriteBlock} implements condition~C3 of Proposition~1: the stable cache
+update is atomic with the ledger write within the Raft apply goroutine.
+
+\paragraph{Hook 3 — Leader abdication (\texttt{becomeFollower}).}
+When the Raft node steps down from leader to follower, any speculative state
+built for in-flight proposals will never be committed.  The hook
+\begin{verbatim}
+if c.constraintMgr != nil { c.constraintMgr.Rollback() }
+\end{verbatim}
+discards this state by resetting $s_\text{spec} \leftarrow
+s_\text{stable}.\texttt{Clone()}$, satisfying the Rollback operation of
+Definition~1.
+
+\paragraph{Hook 4 — Chain activation (\texttt{HandleChain}).}
+The consenter's \texttt{HandleChain} method, called once per channel at orderer
+startup, checks whether the channel appears in the \texttt{FABRIC\_CONSTRAINT\_CHANNELS}
+environment variable.  If so, it executes the following initialisation
+sequence:
+\begin{enumerate}
+  \item Read the peer snapshot configuration from environment variables
+    (\texttt{peersnapshot.FromEnv}).
+  \item Dial the trusted peer with mutual TLS and obtain a
+    \texttt{PeerEndorserSnapshot} (\texttt{peersnapshot.New}).
+  \item Construct a \texttt{BioankEvaluator} and pass it together with the
+    snapshot to \texttt{constraint.NewStateManager}, which calls
+    \texttt{Init} to build the initial stable cache.
+  \item Wire the resulting \texttt{StateManager} into the chain via
+    \texttt{chain.EnableConstraintAwareOrdering(mgr)}.
+\end{enumerate}
+If any step fails — unreachable peer, malformed TLS certificate, or Init
+error — \texttt{HandleChain} returns an error and the orderer refuses to start
+for that channel, preventing a channel from starting in an unconstrained state.
+
+%-------------------------------------------------------------
+\subsection{ZooKeeper Coordinator (M_D Exogenous Baseline)}
+\label{subsec:impl-zk}
+
+The exogenous baseline replicates the guarantee of $M_D$ without modifying the
+orderer.  A stateless HTTP coordinator process (the ``ZooKeeper coordinator'',
+\texttt{tools/zkcoordinator}) mediates all transfer requests: clients must
+obtain a \emph{reservation} before submitting a transaction to Fabric, and
+confirm or cancel it after the transaction commits or fails.
+
+\paragraph{API.}
+The coordinator exposes four endpoints over HTTP/1.1:
+\begin{itemize}
+  \item \textbf{POST /v1/reserve} — atomically checks $C_\text{global}$ against
+    the in-memory counter and, if admission is possible, increments the count
+    and returns a \texttt{reservationId}.
+  \item \textbf{POST /v1/confirm} — removes a pending reservation and records
+    the transfer as committed (decrements the outgoing holder's count if
+    appropriate).
+  \item \textbf{POST /v1/cancel} — releases a reservation without committing,
+    decrementing the count previously incremented by \textsc{Reserve}.
+  \item \textbf{POST /v1/release} — releases a holder slot explicitly
+    (used after \textsc{Revoke} or \textsc{Publish}).
+\end{itemize}
+A background goroutine expires stale reservations (those not confirmed or
+cancelled within a configurable timeout) every 10 seconds, preventing leaked
+counts from client crashes.
+
+\paragraph{Protocol and limitations.}
+The client workload driver (\texttt{transfer-zk.js}) implements the full
+three-phase protocol: Reserve → Fabric \textsc{Transfer} submit → Confirm
+(or Cancel on error).  The coordinator enforces $C_\text{global}$ at the
+Reserve step; IVR is zero as long as every client faithfully executes
+Confirm/Cancel.  However, a client crash between Reserve and Confirm (or
+Confirm and ledger commit) breaks this guarantee: the coordinator's counter
+diverges from the ledger state.  The \texttt{expireStaleReservations}
+mechanism mitigates — but does not eliminate — this divergence.  This
+structural fragility, absent in the endogenous architecture, is one of
+the empirical observations of the evaluation (\S\ref{sec:evaluation}).
+
+\paragraph{Implementation.}
+The coordinator is a single-binary Go service (no ZooKeeper dependency
+is actually used; the name reflects the exogenous coordination role
+described in Paper~2).  It maintains one in-memory \texttt{map[string]*GroupCounter}
+protected by a mutex; persistence is intentionally omitted to match
+the Paper~2 exogenous model, which assumes the coordinator restarts
+cleanly or is HA-replicated externally.  The binary is packaged as a
+multi-stage Docker image and deployed alongside the Fabric network
+as a \texttt{docker-compose} sidecar.
+
+%-------------------------------------------------------------
+\subsection{Correctness of the Integration}
+\label{subsec:impl-correctness}
+
+We verify that the three conditions of Proposition~1 are satisfied by the
+implementation:
+
+\textbf{C1 — Leader uniqueness.}
+Raft guarantees that at most one node holds the leader role in a given term.
+The \texttt{constraintMgr} is activated via \texttt{EnableConstraintAwareOrdering}
+on the leader's \texttt{Chain} instance; follower instances never call
+\texttt{BeginBatch} or \texttt{ProcessBatch}.  The follower guard in
+\texttt{Commit} (\texttt{if !inBatch \{ return \}}) ensures that blocks
+received from the leader are written to the follower ledger without corrupting
+the follower's stable cache, which was correctly initialised by \texttt{Init}
+at startup.
+
+\textbf{C2 — Sequential cache access.}
+\texttt{filterBatch} (and therefore \texttt{BeginBatch} + \texttt{ProcessBatch})
+is called exclusively from the block construction goroutine within
+\texttt{propose}.  Fabric's etcdraft implementation processes at most one
+outstanding proposal at a time (bounded by \texttt{MaxInflightBlocks});
+no concurrent evaluation occurs.  The mutex in \texttt{StateManager} guards
+only the \texttt{Commit}/\texttt{Rollback} path called from the Raft apply
+goroutine.
+
+\textbf{C3 — Atomic commit.}
+\texttt{Commit} is called synchronously from \texttt{writeBlock}, immediately
+after \texttt{support.WriteBlock} returns.  The Raft apply goroutine does not
+yield between these two calls; no other thread can observe an intermediate
+state in which the ledger has been updated but the stable cache has not.
+\texttt{Rollback}, symmetrically, is called from \texttt{becomeFollower} before
+the goroutine resumes normal follower operation.
+
+Together these three conditions ensure that the sequential equivalence of
+Proposition~1 holds: processing a batch of $n$ transactions through
+\texttt{ProcessBatch} under the evolving speculative state is equivalent to
+evaluating each transaction individually in the order it was admitted, against
+the running state.  Theorem~1 then guarantees that the IVR of the endogenous
+architecture is identically zero for any executions that satisfy C1--C3.
+
+%-------------------------------------------------------------
+\subsection{Lines of Code Summary}
+\label{subsec:impl-loc}
+
+\begin{table}[h]
+\centering
+\caption{Implementation effort by component.}
+\label{tab:loc}
+\begin{tabular}{lrr}
+\toprule
+Component & Go (lines) & JS (lines) \\
+\midrule
+Directed-traceability chaincode            & 620  & —   \\
+Generic constraint interface (\texttt{constraint}) & 280  & —   \\
+Biobank evaluator (\texttt{biobank})       & 455  & —   \\
+Peer snapshot (\texttt{peersnapshot})      & 328  & —   \\
+Orderer hook points (\texttt{chain}, \texttt{consenter}) & 95 & — \\
+ZooKeeper coordinator                      & 490  & —   \\
+Unit tests (constraint, chain)             & 415  & —   \\
+Caliper workload drivers                   & —    & 410 \\
+\midrule
+\textbf{Total}                             & \textbf{2\,683} & \textbf{410} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The orderer hook points account for fewer than 100 lines, reflecting the
+minimal invasiveness of the integration: the entire constraint enforcement
+mechanism is expressed as four nil-checked hooks on the existing \texttt{Chain}
+struct, with no changes to the Raft protocol, block storage, or client-facing
+gRPC services.

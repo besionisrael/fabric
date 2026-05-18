@@ -1,0 +1,23 @@
+version: '3.7'
+
+# Overlay for the ZooKeeper-baseline run.
+# Adds the zkcoordinator sidecar. The Fabric network itself is identical to
+# the other two runs; only the Caliper workload differs (calls Reserve before
+# endorsement, Confirm/Cancel after commit).
+
+networks:
+  paper3:
+    name: paper3
+
+services:
+  zkcoordinator:
+    build:
+      context: ../../../tools/zkcoordinator
+      dockerfile: Dockerfile
+    image: paper3/zkcoordinator:latest
+    environment:
+      - ZK_COORDINATOR_ADDR=:8080
+    ports:
+      - "8080:8080"
+    networks:
+      - paper3

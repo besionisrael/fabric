@@ -89,6 +89,16 @@ var (
 		LabelNames:   []string{"channel"},
 		StatsdFormat: "%{#fqname}.%{channel}",
 	}
+	// constraintRejectionsOpts counts transactions excluded by the constraint-aware
+	// orderer (Paper 3, §III). Used to measure the intra-block rejection rate.
+	constraintRejectionsOpts = metrics.CounterOpts{
+		Namespace:    "consensus",
+		Subsystem:    "etcdraft",
+		Name:         "constraint_rejections",
+		Help:         "The total number of transactions rejected by the constraint-aware orderer (C_global violations).",
+		LabelNames:   []string{"channel"},
+		StatsdFormat: "%{#fqname}.%{channel}",
+	}
 )
 
 type Metrics struct {
@@ -102,6 +112,7 @@ type Metrics struct {
 	DataPersistDuration     metrics.Histogram
 	NormalProposalsReceived metrics.Counter
 	ConfigProposalsReceived metrics.Counter
+	ConstraintRejections    metrics.Counter
 }
 
 func NewMetrics(p metrics.Provider) *Metrics {
@@ -116,5 +127,6 @@ func NewMetrics(p metrics.Provider) *Metrics {
 		DataPersistDuration:     p.NewHistogram(dataPersistDurationOpts),
 		NormalProposalsReceived: p.NewCounter(normalProposalsReceivedOpts),
 		ConfigProposalsReceived: p.NewCounter(configProposalsReceivedOpts),
+		ConstraintRejections:    p.NewCounter(constraintRejectionsOpts),
 	}
 }

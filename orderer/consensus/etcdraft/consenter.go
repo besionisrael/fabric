@@ -7,8 +7,10 @@ SPDX-License-Identifier: Apache-2.0
 package etcdraft
 
 import (
+	"os"
 	"path"
 	"reflect"
+	"strings"
 	"time"
 
 	"code.cloudfoundry.org/clock"
@@ -26,6 +28,9 @@ import (
 	"github.com/hyperledger/fabric/orderer/common/localconfig"
 	"github.com/hyperledger/fabric/orderer/common/types"
 	"github.com/hyperledger/fabric/orderer/consensus"
+	"github.com/hyperledger/fabric/orderer/consensus/etcdraft/constraint"
+	"github.com/hyperledger/fabric/orderer/consensus/etcdraft/constraint/biobank"
+	"github.com/hyperledger/fabric/orderer/consensus/etcdraft/constraint/peersnapshot"
 	"github.com/hyperledger/fabric/protoutil"
 	"github.com/pkg/errors"
 	"go.etcd.io/raft/v3"
@@ -213,7 +218,7 @@ func (c *Consenter) HandleChain(support consensus.ConsenterSupport, metadata *co
 	c.Logger.Info("After eviction from the cluster Registrar.SwitchToFollower will be called, and the orderer will become a follower of the channel.")
 	haltCallback := func() { c.ChainManager.SwitchChainToFollower(support.ChannelID()) }
 
-	return NewChain(
+	chain, err := NewChain(
 		support,
 		opts,
 		c.Communication,
@@ -225,6 +230,45 @@ func (c *Consenter) HandleChain(support consensus.ConsenterSupport, metadata *co
 		haltCallback,
 		nil,
 	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Constraint-aware ordering (Paper 3, §III.A).
+	// Activated per-channel via the FABRIC_CONSTRAINT_CHANNELS environment variable,
+	// a comma-separated list of channel IDs. When a channel appears in the list,
+	// the chain is wired with a BioankEvaluator (biobank instantiation of M_D).
+	//
+	// Example:
+	//   FABRIC_CONSTRAINT_CHANNELS=paper3channel
+	//
+	// When the variable is absent or the channel is not listed, constraintMgr
+	// remains nil and the standard Fabric pipeline is used unchanged (M_L baseline).
+	if constraintChannels := os.Getenv("FABRIC_CONSTRAINT_CHANNELS"); constraintChannels != "" {
+		for _, ch := range strings.Split(constraintChannels, ",") {
+			if strings.TrimSpace(ch) == support.ChannelID() {
+				eval := biobank.New()
+				snapCfg, snapCfgErr := peersnapshot.FromEnv(support.ChannelID())
+				if snapCfgErr != nil {
+					return nil, errors.Wrap(snapCfgErr, "failed to read peer snapshot config for constraint ordering")
+				}
+				snap, snapErr := peersnapshot.New(snapCfg)
+				if snapErr != nil {
+					return nil, errors.Wrap(snapErr, "failed to connect to peer for world state snapshot")
+				}
+				mgr, mgrErr := constraint.NewStateManager(eval, snap)
+				if mgrErr != nil {
+					snap.Close()
+					return nil, errors.Wrap(mgrErr, "failed to initialise constraint state manager")
+				}
+				chain.EnableConstraintAwareOrdering(mgr)
+				c.Logger.Infof("Constraint-aware ordering enabled for channel %s (M_D endogenous)", support.ChannelID())
+				break
+			}
+		}
+	}
+
+	return chain, nil
 }
 
 func (c *Consenter) IsChannelMember(joinBlock *common.Block) (bool, error) {

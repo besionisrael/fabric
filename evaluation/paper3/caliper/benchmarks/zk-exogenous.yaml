@@ -1,0 +1,51 @@
+# Benchmark: ZooKeeper + Fabric — M_D exogenous baseline.
+# The zkcoordinator service enforces C_global before clients endorse transactions.
+# IVR = 0 when clients faithfully call Confirm/Cancel; additional latency from
+# the Reserve RTT is the key cost to measure.
+test:
+  name: zk-exogenous
+  description: >
+    M_D exogenous: ZK coordinator pre-admission + Fabric standard ordering.
+    Measures throughput, latency, IVR, and Reserve/Confirm overhead.
+  workers:
+    number: 5
+  rounds:
+    - label: register-resources
+      description: Register 50 resources (warm-up)
+      txNumber: 50
+      rateControl:
+        type: fixed-rate
+        opts:
+          tps: 20
+      workload:
+        module: workload/register.js
+        arguments:
+          resourcesPerWorker: 10
+          maxConcurrent: 3
+          subsetGroup: "biobank-group-A"
+
+    - label: concurrent-transfer-zk
+      description: >
+        5 agents, K_max=3. Each worker calls Reserve → endorse → submit → Confirm/Cancel.
+        IVR expected = 0. Extra latency = 2× coordinator RTT per tx.
+      txNumber: 500
+      rateControl:
+        type: fixed-rate
+        opts:
+          tps: 100
+      workload:
+        module: workload/transfer-zk.js
+        arguments:
+          subsetGroup: "biobank-group-A"
+          maxConcurrent: 3
+          coordinatorUrl: http://zkcoordinator:8080
+
+monitors:
+  resource:
+    - module: prometheus
+      options:
+        url: http://localhost:9090
+        metrics:
+          include:
+            - consensus_etcdraft_committed_block_number
+            - consensus_etcdraft_normal_proposals_received

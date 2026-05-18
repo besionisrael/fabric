@@ -216,6 +216,11 @@ type Chain struct {
 	CryptoProvider bccsp.BCCSP
 
 	leadershipTransferInProgress uint32
+
+	// constraintMgr evaluates global usage constraints during block construction,
+	// implementing the constraint-aware ordering service of Paper 3, §III.
+	// When nil, the orderer behaves as Fabric standard (M_L baseline).
+	constraintMgr constraintManager
 }
 
 // NewChain constructs a chain object.
@@ -702,6 +707,11 @@ func (c *Chain) run() {
 		submitC = c.submitC
 		bc = nil
 		c.Metrics.IsLeader.Set(0)
+		// Discard any speculative constraint state that was built for in-flight
+		// proposals that will now never be committed (Paper 3, Definition 1, Rollback).
+		if c.constraintMgr != nil {
+			c.constraintMgr.Rollback()
+		}
 	}
 
 	for {
@@ -911,6 +921,12 @@ func (c *Chain) writeBlock(block *common.Block, index uint64) {
 	c.raftMetadataLock.Unlock()
 
 	c.support.WriteBlock(block, m)
+
+	// Promote speculative constraint cache to stable after Raft commit
+	// (Paper 3, Definition 1, Commit operation; Proposition 1, condition C3).
+	if c.constraintMgr != nil {
+		c.constraintMgr.Commit()
+	}
 }
 
 // Orders the envelope in the `msg` content. SubmitRequest.
@@ -1027,6 +1043,15 @@ func (c *Chain) ordered(msg *orderer.SubmitRequest) (batches [][]*common.Envelop
 
 func (c *Chain) propose(ch chan<- *common.Block, bc *blockCreator, batches ...[]*common.Envelope) {
 	for _, batch := range batches {
+		// Constraint-aware ordering (Paper 3, Algorithm 1):
+		// Filter the batch through the global constraint evaluator before
+		// creating the block. When constraintMgr is nil (Fabric standard),
+		// this is a no-op and the full batch is used unchanged.
+		batch = c.filterBatch(batch)
+		if len(batch) == 0 {
+			continue // entire batch rejected by constraint evaluator
+		}
+
 		b := bc.createNextBlock(batch)
 		c.logger.Infof("Created block [%d], there are %d blocks in flight", b.Header.Number, c.blockInflight)
 

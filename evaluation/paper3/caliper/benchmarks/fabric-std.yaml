@@ -1,0 +1,54 @@
+# Benchmark: Fabric standard — M_L baseline.
+# C_global is declared in resource conditions but NOT enforced at the orderer.
+# IVR > 0 is expected when 5 agents compete for a group with MaxConcurrent=3.
+test:
+  name: fabric-std
+  description: >
+    M_L baseline: Fabric standard ordering, no constraint-aware orderer.
+    Measures throughput, latency, and IVR under concurrent transfer load.
+  workers:
+    number: 5   # one worker per simulated agent
+  rounds:
+    # Round 1: resource registration (warm-up, all architectures identical)
+    - label: register-resources
+      description: Register 50 resources (10 per agent) — no constraint conflict
+      txNumber: 50
+      rateControl:
+        type: fixed-rate
+        opts:
+          tps: 20
+      workload:
+        module: workload/register.js
+        arguments:
+          resourcesPerWorker: 10
+          maxConcurrent: 3
+          subsetGroup: "biobank-group-A"
+
+    # Round 2: concurrent transfer — C_global stress test
+    # 5 agents compete for a group with K_max=3.
+    # Under M_L, the chaincode cannot see concurrent in-flight transactions,
+    # so it will admit some that violate C_global. IVR > 0 is expected.
+    - label: concurrent-transfer
+      description: >
+        5 agents, K_max=3. Under M_L, expected IVR ≈ (5-3)/5 = 0.40 at saturation.
+      txNumber: 500
+      rateControl:
+        type: fixed-rate
+        opts:
+          tps: 100
+      workload:
+        module: workload/transfer-std.js
+        arguments:
+          subsetGroup: "biobank-group-A"
+          maxConcurrent: 3
+
+monitors:
+  resource:
+    - module: prometheus
+      options:
+        url: http://localhost:9090
+        metrics:
+          include:
+            - consensus_etcdraft_committed_block_number
+            - consensus_etcdraft_normal_proposals_received
+            - consensus_etcdraft_constraint_rejections
