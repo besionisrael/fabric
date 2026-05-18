@@ -7,7 +7,7 @@
 #       -f evaluation/paper3/network/orderer.Dockerfile .
 
 # ── Stage 1: build ────────────────────────────────────────────────────────────
-FROM golang:1.22-bullseye AS builder
+FROM golang:1.26-bullseye AS builder
 
 WORKDIR /build
 
