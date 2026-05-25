@@ -460,20 +460,20 @@ func (cc *DirectedTraceability) loadActive(stub shim.ChaincodeStubInterface, id 
 	data, err := stub.GetState(id)
 	if err != nil {
 		r := shim.Error(fmt.Sprintf("failed to read state: %v", err))
-		return nil, &r
+		return nil, r
 	}
 	if data == nil {
 		r := shim.Error(fmt.Sprintf("resource %s not found", id))
-		return nil, &r
+		return nil, r
 	}
 	var resource Resource
 	if err := json.Unmarshal(data, &resource); err != nil {
 		r := shim.Error(fmt.Sprintf("failed to unmarshal resource: %v", err))
-		return nil, &r
+		return nil, r
 	}
 	if resource.Status != StatusActive {
 		r := shim.Error(fmt.Sprintf("C_status: resource %s is not active (status: %s)", id, resource.Status))
-		return nil, &r
+		return nil, r
 	}
 	return &resource, nil
 }
@@ -518,7 +518,7 @@ func (cc *DirectedTraceability) checkActionAllowed(r *Resource, action string) *
 	}
 	resp := shim.Error(fmt.Sprintf("C_conditions: action %q is not permitted for resource %s (allowed: %v)",
 		action, r.ID, r.Conditions.AllowedActions))
-	return &resp
+	return resp
 }
 
 // checkPurposeAllowed returns an error response if the declared purpose is not
@@ -534,7 +534,7 @@ func (cc *DirectedTraceability) checkPurposeAllowed(r *Resource, purpose string)
 	}
 	resp := shim.Error(fmt.Sprintf("C_conditions: purpose %q is not permitted for resource %s (allowed: %v)",
 		purpose, r.ID, r.Conditions.AllowedPurposes))
-	return &resp
+	return resp
 }
 
 // checkExpiry returns an error response if the resource's conditions have
@@ -549,7 +549,7 @@ func (cc *DirectedTraceability) checkExpiry(r *Resource) *pb.Response {
 	}
 	if time.Now().UTC().After(expiry) {
 		resp := shim.Error(fmt.Sprintf("C_expiry: resource %s conditions expired at %s", r.ID, r.Conditions.ExpiresAt))
-		return &resp
+		return resp
 	}
 	return nil
 }
@@ -580,7 +580,7 @@ func (cc *DirectedTraceability) checkConditionPropagation(current, proposed Cond
 			resp := shim.Error(fmt.Sprintf(
 				"C_propagation: proposed MaxTransfers (%d) relaxes current cap (%d)",
 				proposed.MaxTransfers, current.MaxTransfers))
-			return &resp
+			return resp
 		}
 	}
 
@@ -590,7 +590,7 @@ func (cc *DirectedTraceability) checkConditionPropagation(current, proposed Cond
 			resp := shim.Error(fmt.Sprintf(
 				"C_propagation: proposed MaxConcurrent (%d) relaxes current cap (%d)",
 				proposed.MaxConcurrent, current.MaxConcurrent))
-			return &resp
+			return resp
 		}
 	}
 
@@ -602,7 +602,7 @@ func (cc *DirectedTraceability) checkConditionPropagation(current, proposed Cond
 			resp := shim.Error(fmt.Sprintf(
 				"C_propagation: proposed expiry (%s) extends beyond current expiry (%s)",
 				proposed.ExpiresAt, current.ExpiresAt))
-			return &resp
+			return resp
 		}
 	}
 
@@ -620,7 +620,7 @@ func checkSubset(field string, allowed, proposed []string) *pb.Response {
 			resp := shim.Error(fmt.Sprintf(
 				"C_propagation: proposed %s contains %q which is not in current allowed set %v",
 				field, p, allowed))
-			return &resp
+			return resp
 		}
 	}
 	return nil
