@@ -7,6 +7,9 @@ test:
     Baseline throughput and latency for the directed-traceability chaincode
     running on stock Fabric 3.x (no constraint-aware orderer, no ZK proofs).
 
+  workers:
+    number: 2
+
   rounds:
     - label: register-warmup
       description: Warmup - 100 tx at 10 TPS to prime JIT and caches.

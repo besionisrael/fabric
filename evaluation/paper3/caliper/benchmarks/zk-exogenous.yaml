@@ -8,6 +8,9 @@ test:
     Throughput and latency with ZK proof verification inside the chaincode
     (exogenous constraint enforcement). Measures overhead vs fabric-std.
 
+  workers:
+    number: 2
+
   rounds:
     - label: zk-warmup
       description: Warmup - 100 tx at 10 TPS.

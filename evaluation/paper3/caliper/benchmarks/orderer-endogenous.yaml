@@ -9,6 +9,9 @@ test:
     Throughput and latency with constraint checking at the orderer
     (endogenous enforcement). Measures overhead vs fabric-std baseline.
 
+  workers:
+    number: 2
+
   rounds:
     - label: endo-warmup
       description: Warmup - 100 tx at 10 TPS.
