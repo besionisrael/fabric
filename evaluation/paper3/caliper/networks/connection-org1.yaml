@@ -42,7 +42,7 @@ peers:
       ssl-target-name-override: peer0.org1.example.com
       hostnameOverride: peer0.org1.example.com
     tlsCACerts:
-      path: "../../network/crypto-config/peerOrganizations/org1.example.com/tlsca/tlsca.org1.example.com-cert.pem"
+      path: "../network/crypto-config/peerOrganizations/org1.example.com/tlsca/tlsca.org1.example.com-cert.pem"
 
   peer1.org1.example.com:
     url: grpcs://peer1.org1.example.com:9051
@@ -50,7 +50,7 @@ peers:
       ssl-target-name-override: peer1.org1.example.com
       hostnameOverride: peer1.org1.example.com
     tlsCACerts:
-      path: "../../network/crypto-config/peerOrganizations/org1.example.com/tlsca/tlsca.org1.example.com-cert.pem"
+      path: "../network/crypto-config/peerOrganizations/org1.example.com/tlsca/tlsca.org1.example.com-cert.pem"
 
 orderers:
   orderer0.example.com:
@@ -59,4 +59,4 @@ orderers:
       ssl-target-name-override: orderer0.example.com
       hostnameOverride: orderer0.example.com
     tlsCACerts:
-      path: "../../network/crypto-config/ordererOrganizations/example.com/tlsca/tlsca.example.com-cert.pem"
+      path: "../network/crypto-config/ordererOrganizations/example.com/tlsca/tlsca.example.com-cert.pem"
