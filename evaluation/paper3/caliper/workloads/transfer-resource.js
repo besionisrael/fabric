@@ -60,7 +60,7 @@ class TransferResourceWorkload extends WorkloadModuleBase {
 
         const request = {
             contractId:        this.chaincodeId,
-            contractFunction:  'TransferResource',
+            contractFunction:  'Transfer',
             contractArguments: [resourceId, newHolder, newConditions],
             timeout:  30,
             readOnly: false,
