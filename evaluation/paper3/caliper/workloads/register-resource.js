@@ -27,11 +27,13 @@ class RegisterResourceWorkload extends WorkloadModuleBase {
         this.prefix      = roundArguments.prefix      || 'res';
         this.zkProof     = !!roundArguments.zkProof;
         this.workerIndex = workerIndex;
+        // Unique run ID so re-runs don't collide with previous ledger entries.
+        this.runId = Date.now();
     }
 
     async submitTransaction() {
         this.txIndex++;
-        const resourceId = `${this.prefix}-w${this.workerIndex}-${this.txIndex}`;
+        const resourceId = `${this.prefix}-w${this.workerIndex}-${this.runId}-${this.txIndex}`;
 
         const conditions = {
             allowedActions:  ['research', 'transfer'],

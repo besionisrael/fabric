@@ -24,6 +24,7 @@ class TransferResourceWorkload extends WorkloadModuleBase {
         this.chaincodeId = roundArguments.chaincodeId || 'directed-traceability';
         this.prefix      = roundArguments.prefix      || 'xfer';
         this.workerIndex = workerIndex;
+        this.runId = Date.now();
 
         const poolSize = roundArguments.poolSize || 100;
 
@@ -35,7 +36,7 @@ class TransferResourceWorkload extends WorkloadModuleBase {
         });
 
         for (let i = 0; i < poolSize; i++) {
-            const id = `${this.prefix}-pool-w${workerIndex}-${i}`;
+            const id = `${this.prefix}-pool-w${workerIndex}-${this.runId}-${i}`;
             this.pool.push(id);
             await sutAdapter.sendRequests({
                 contractId:        this.chaincodeId,
