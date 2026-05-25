@@ -1,51 +1,52 @@
-# Benchmark: ZooKeeper + Fabric — M_D exogenous baseline.
-# The zkcoordinator service enforces C_global before clients endorse transactions.
-# IVR = 0 when clients faithfully call Confirm/Cancel; additional latency from
-# the Reserve RTT is the key cost to measure.
+﻿---
+# Benchmark: zk-exogenous
+# ZK proof verification done inside the chaincode (exogenous approach).
+# Same network as fabric-std; chaincode verifies a mock ZK proof payload.
 test:
   name: zk-exogenous
   description: >
-    M_D exogenous: ZK coordinator pre-admission + Fabric standard ordering.
-    Measures throughput, latency, IVR, and Reserve/Confirm overhead.
-  workers:
-    number: 5
+    Throughput and latency with ZK proof verification inside the chaincode
+    (exogenous constraint enforcement). Measures overhead vs fabric-std.
+
   rounds:
-    - label: register-resources
-      description: Register 50 resources (warm-up)
-      txNumber: 50
+    - label: zk-warmup
+      description: Warmup - 100 tx at 10 TPS.
+      txNumber: 100
       rateControl:
         type: fixed-rate
         opts:
-          tps: 20
+          tps: 10
       workload:
-        module: workload/register.js
+        module: workloads/register-resource.js
         arguments:
-          resourcesPerWorker: 10
-          maxConcurrent: 3
-          subsetGroup: "biobank-group-A"
+          chaincodeId: directed-traceability
+          prefix: "zk-w"
+          zkProof: true
 
-    - label: concurrent-transfer-zk
-      description: >
-        5 agents, K_max=3. Each worker calls Reserve → endorse → submit → Confirm/Cancel.
-        IVR expected = 0. Extra latency = 2× coordinator RTT per tx.
-      txNumber: 500
+    - label: zk-sustained
+      description: Sustained load - 120 s at 50 TPS with ZK payload.
+      txDuration: 120
       rateControl:
         type: fixed-rate
         opts:
-          tps: 100
+          tps: 50
       workload:
-        module: workload/transfer-zk.js
+        module: workloads/register-resource.js
         arguments:
-          subsetGroup: "biobank-group-A"
-          maxConcurrent: 3
-          coordinatorUrl: http://zkcoordinator:8080
+          chaincodeId: directed-traceability
+          prefix: "zk-s"
+          zkProof: true
 
-monitors:
-  resource:
-    - module: prometheus
-      options:
-        url: http://localhost:9090
-        metrics:
-          include:
-            - consensus_etcdraft_committed_block_number
-            - consensus_etcdraft_normal_proposals_received
+    - label: zk-stress
+      description: Stress - 60 s at 200 TPS with ZK payload.
+      txDuration: 60
+      rateControl:
+        type: fixed-rate
+        opts:
+          tps: 200
+      workload:
+        module: workloads/register-resource.js
+        arguments:
+          chaincodeId: directed-traceability
+          prefix: "zk-x"
+          zkProof: true

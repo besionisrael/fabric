@@ -1,53 +1,50 @@
-# Benchmark: Constraint-aware orderer — M_D endogenous (Paper 3 contribution).
-# C_global is enforced inside the Raft leader's block construction path.
-# Admission and commit are atomic in a single Raft round.
-# IVR = 0 by construction. No coordinator RTT. Intra-block rejection rate > 0
-# when competing transactions arrive in the same batch (measured via Prometheus
-# consensus_etcdraft_constraint_rejections counter).
+﻿---
+# Benchmark: orderer-endogenous
+# Constraint checking at orderer level (endogenous approach).
+# Requires custom orderer image: fabric-orderer-constraint:directed-traceability.
+# Run AFTER swapping orderer image in docker-compose and restarting orderers.
 test:
   name: orderer-endogenous
   description: >
-    M_D endogenous: constraint-aware orderer (Paper 3, §III.A).
-    Measures throughput, latency, IVR = 0 guarantee, and intra-block rejection rate.
-  workers:
-    number: 5
+    Throughput and latency with constraint checking at the orderer
+    (endogenous enforcement). Measures overhead vs fabric-std baseline.
+
   rounds:
-    - label: register-resources
-      description: Register 50 resources (warm-up)
-      txNumber: 50
+    - label: endo-warmup
+      description: Warmup - 100 tx at 10 TPS.
+      txNumber: 100
       rateControl:
         type: fixed-rate
         opts:
-          tps: 20
+          tps: 10
       workload:
-        module: workload/register.js
+        module: workloads/register-resource.js
         arguments:
-          resourcesPerWorker: 10
-          maxConcurrent: 3
-          subsetGroup: "biobank-group-A"
+          chaincodeId: directed-traceability
+          prefix: "endo-w"
 
-    - label: concurrent-transfer-endogenous
-      description: >
-        5 agents, K_max=3. Orderer enforces C_global inline.
-        IVR = 0. Rejected txs remain in client queue; clients retry after backoff.
-      txNumber: 500
+    - label: endo-sustained
+      description: Sustained load - 120 s at 50 TPS.
+      txDuration: 120
       rateControl:
         type: fixed-rate
         opts:
-          tps: 100
+          tps: 50
       workload:
-        module: workload/transfer-endogenous.js
+        module: workloads/register-resource.js
         arguments:
-          subsetGroup: "biobank-group-A"
-          maxConcurrent: 3
+          chaincodeId: directed-traceability
+          prefix: "endo-s"
 
-monitors:
-  resource:
-    - module: prometheus
-      options:
-        url: http://localhost:9090
-        metrics:
-          include:
-            - consensus_etcdraft_committed_block_number
-            - consensus_etcdraft_normal_proposals_received
-            - consensus_etcdraft_constraint_rejections
+    - label: endo-stress
+      description: Stress - 60 s at 200 TPS.
+      txDuration: 60
+      rateControl:
+        type: fixed-rate
+        opts:
+          tps: 200
+      workload:
+        module: workloads/register-resource.js
+        arguments:
+          chaincodeId: directed-traceability
+          prefix: "endo-x"
