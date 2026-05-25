@@ -3,7 +3,7 @@
 # Run setup-caliper.sh first — it resolves the Admin private key path
 # and writes paper3-network-resolved.yaml with the correct keystore filename.
 name: paper3-network
-version: "1.0"
+version: "2"
 caliper:
   blockchain: fabric
 
