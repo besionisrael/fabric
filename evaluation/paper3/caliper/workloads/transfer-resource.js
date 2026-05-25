@@ -52,17 +52,23 @@ class TransferResourceWorkload extends WorkloadModuleBase {
         this.txIndex++;
         // Round-robin through the pool.
         const resourceId   = this.pool[this.txIndex % this.pool.length];
-        const newHolder    = `agent-w${this.workerIndex}-${this.txIndex}`;
-        const newConditions = JSON.stringify({
-            allowedActions:  ['research'],
-            allowedPurposes: ['oncology'],
-            maxTransfers: 10,
+        // agentID = current holder (set during pool registration as init-agent-<workerIndex>)
+        // transferJSON wraps toAgent + newConditions as required by the chaincode.
+        const currentHolder = `init-agent-${this.workerIndex}`;
+        const toAgent       = `agent-w${this.workerIndex}-${this.txIndex}`;
+        const transferJSON  = JSON.stringify({
+            toAgent,
+            newConditions: {
+                allowedActions:  ['research'],
+                allowedPurposes: ['oncology'],
+                maxTransfers: 10,
+            },
         });
 
         const request = {
             contractId:        this.chaincodeId,
             contractFunction:  'Transfer',
-            contractArguments: [resourceId, newHolder, newConditions],
+            contractArguments: [resourceId, currentHolder, transferJSON],
             timeout:  30,
             readOnly: false,
         };
