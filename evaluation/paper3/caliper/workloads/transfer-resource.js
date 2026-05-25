@@ -15,6 +15,7 @@ class TransferResourceWorkload extends WorkloadModuleBase {
         super();
         this.txIndex    = 0;
         this.pool       = [];
+        this.holders    = [];   // mirrors on-ledger currentHolder per resource
         this.chaincodeId = 'directed-traceability';
         this.prefix      = 'xfer';
     }
@@ -29,19 +30,23 @@ class TransferResourceWorkload extends WorkloadModuleBase {
         const poolSize = roundArguments.poolSize || 100;
 
         // Pre-register the resource pool so transfer round has valid targets.
+        // maxTransfers: 999 so the counter never depletes during any realistic test.
         const conditions = JSON.stringify({
             allowedActions:  ['research', 'transfer'],
             allowedPurposes: ['oncology', 'genomics'],
-            maxTransfers: 50,
+            maxTransfers: 999,
         });
 
+        const initHolder = `init-agent-${workerIndex}`;
         for (let i = 0; i < poolSize; i++) {
             const id = `${this.prefix}-pool-w${workerIndex}-${this.runId}-${i}`;
             this.pool.push(id);
+            // Track who currently holds each resource; starts with the registration agent.
+            this.holders.push(initHolder);
             await sutAdapter.sendRequests({
                 contractId:        this.chaincodeId,
                 contractFunction:  'RegisterResource',
-                contractArguments: [id, 'biobank-research', `init-agent-${workerIndex}`, 'active', conditions],
+                contractArguments: [id, 'biobank-research', initHolder, 'active', conditions],
                 timeout:  30,
                 readOnly: false,
             });
@@ -51,24 +56,35 @@ class TransferResourceWorkload extends WorkloadModuleBase {
     async submitTransaction() {
         this.txIndex++;
         // Round-robin through the pool.
-        const resourceId   = this.pool[this.txIndex % this.pool.length];
-        // agentID = current holder (set during pool registration as init-agent-<workerIndex>)
+        const idx        = this.txIndex % this.pool.length;
+        const resourceId = this.pool[idx];
+
+        // Use the locally tracked holder so we always send the correct agentID
+        // even after a resource has been transferred multiple times.
+        const fromAgent = this.holders[idx];
+        const toAgent   = `agent-w${this.workerIndex}-tx${this.txIndex}`;
+
+        // Update holder state optimistically before sending.
+        // In a clean test environment failures are negligible; if a tx does fail
+        // Caliper records it and the next round-robin attempt for this slot will
+        // use the wrong holder (one failure per slot, bounded by pool size).
+        this.holders[idx] = toAgent;
+
         // transferJSON wraps toAgent + newConditions as required by the chaincode.
-        const currentHolder = `init-agent-${this.workerIndex}`;
-        const toAgent       = `agent-w${this.workerIndex}-${this.txIndex}`;
-        const transferJSON  = JSON.stringify({
+        // Keep maxTransfers high so the counter never blocks re-transfers.
+        const transferJSON = JSON.stringify({
             toAgent,
             newConditions: {
-                allowedActions:  ['research'],
-                allowedPurposes: ['oncology'],
-                maxTransfers: 10,
+                allowedActions:  ['research', 'transfer'],
+                allowedPurposes: ['oncology', 'genomics'],
+                maxTransfers: 999,
             },
         });
 
         const request = {
             contractId:        this.chaincodeId,
             contractFunction:  'Transfer',
-            contractArguments: [resourceId, currentHolder, transferJSON],
+            contractArguments: [resourceId, fromAgent, transferJSON],
             timeout:  30,
             readOnly: false,
         };

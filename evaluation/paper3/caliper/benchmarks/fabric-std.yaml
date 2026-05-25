@@ -62,4 +62,4 @@ test:
         arguments:
           chaincodeId: directed-traceability
           prefix: "std-t"
-          poolSize: 200
+          poolSize: 100
