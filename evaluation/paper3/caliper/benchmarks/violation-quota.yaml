@@ -69,7 +69,7 @@ test:
           prefix: "viol"
           poolSize: 20
           kMax: 2
-          runTag: "r01"   # ← increment for each re-run: r01, r02, r03 …
+          runTag: "r04"   # ← increment for each re-run: r01, r02, r03 …
 
     # ── Round 2: quota violation burst ────────────────────────────────────────
     # Burst 40 concurrent Transfers (20 per worker) to unique new agents.
@@ -94,4 +94,4 @@ test:
           prefix: "viol"
           poolSize: 20
           kMax: 2
-          runTag: "r01"   # ← must match setup-pool runTag above
+          runTag: "r04"   # ← must match setup-pool runTag above

@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # setup-caliper.sh — prepare Caliper workspace for Paper 3 experiments.
 # Run once from evaluation/paper3/caliper/ before launching any benchmark.
 # Usage: bash setup-caliper.sh

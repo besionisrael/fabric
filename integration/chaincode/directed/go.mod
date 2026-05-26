@@ -1,6 +1,6 @@
 module github.com/hyperledger/fabric/integration/chaincode/directed
 
-go 1.22
+go 1.24.0
 
 require (
 	github.com/hyperledger/fabric-chaincode-go/v2 v2.0.0-20240802023949-a356b32676fd
