@@ -1,0 +1,141 @@
+---
+# Benchmark: perf-overhead
+#
+# Scenario 2 of §V — Performance overhead: M_L (fabric-std) vs M_D (orderer-endogenous)
+# under normal Transfer load with no quota violations.
+#
+# The constraint orderer evaluates every Transfer but always admits (maxConcurrent=999).
+# This isolates the CPU/latency cost of running the BioankEvaluator inside the orderer.
+#
+# Expected result:  < 5 % degradation in throughput and avg latency for M_D vs M_L.
+#
+# ── How to run ─────────────────────────────────────────────────────────────────
+# Run this benchmark TWICE — once per mode.  Use a DIFFERENT runTag each time to
+# avoid "resource already exists" errors in the setup round.
+#
+# 1. M_L baseline (stock orderers):
+#      cd ~/fabric/evaluation/paper3/network
+#      bash run-constraint.sh stop           # restore standard orderers
+#      cd ~/fabric/evaluation/paper3/caliper
+#      # Set runTag: p01 in both rounds below, then:
+#      npx caliper launch manager \
+#        --caliper-workspace . \
+#        --caliper-networkconfig networks/paper3-network.yaml \
+#        --caliper-benchconfig benchmarks/perf-overhead.yaml \
+#        --caliper-flow-only-test \
+#        2>&1 | tee results/perf-overhead-std-p01.log
+#
+# 2. M_D constraint orderer:
+#      cd ~/fabric/evaluation/paper3/network
+#      bash run-constraint.sh start
+#      cd ~/fabric/evaluation/paper3/caliper
+#      # Change runTag: p02 in both rounds, then:
+#      npx caliper launch manager \
+#        --caliper-workspace . \
+#        --caliper-networkconfig networks/paper3-network.yaml \
+#        --caliper-benchconfig benchmarks/perf-overhead.yaml \
+#        --caliper-flow-only-test \
+#        2>&1 | tee results/perf-overhead-constraint-p02.log
+#
+# ── Expected output (reference) ────────────────────────────────────────────────
+# Round     | Mode        | TPS target | Succ | Avg lat (s) | p99 lat (s) | TPS eff
+# setup-perf| both        |     10     |  40  |   ~1.5      |   ~2.5      |  ~8
+# transfer-50| M_L        |     50     | 500  |   ~0.8      |   ~1.5      |  ~45
+# transfer-50| M_D        |     50     | 500  |   ~0.8      |   ~1.5      |  ~45   (<5% diff)
+# transfer-100| M_L       |    100     | 500  |   ~1.0      |   ~2.0      |  ~80
+# transfer-100| M_D       |    100     | 500  |   ~1.0      |   ~2.0      |  ~80   (<5% diff)
+# transfer-200| M_L       |    200     | 500  |   ~1.5      |   ~3.0      |  ~120
+# transfer-200| M_D       |    200     | 500  |   ~1.5      |   ~3.0      |  ~120  (<5% diff)
+
+test:
+  name: perf-overhead
+  description: >
+    Scenario 2: performance overhead of the M_D constraint orderer vs M_L stock orderer.
+    Transfer workload with maxConcurrent=999 (quota never exceeded).
+    3 TPS tiers: 50 / 100 / 200.  500 txs per tier.
+    Compare avg latency, p99 latency, and effective TPS between the two modes.
+
+  workers:
+    number: 2
+
+  rounds:
+    # ── Round 1: pool setup ────────────────────────────────────────────────────
+    # Registers 200 resources (100 per worker) in per-worker SubsetGroups with
+    # maxConcurrent=999.  Larger pool reduces MVCC collision probability at high TPS:
+    # at 100 TPS (50/worker) and ~0.4s avg latency, ~20 txs are in-flight per worker;
+    # with 100 resources/worker the expected in-flight per resource is only ~0.2.
+    - label: setup-perf
+      description: >
+        Register 200 performance-test resources (100 per worker).
+        SubsetGroup enabled, maxConcurrent=999 → constraint evaluator active but
+        never blocks.  Expected: 200 Succ, 0 Fail.
+      txNumber: 200
+      rateControl:
+        type: fixed-rate
+        opts:
+          tps: 20
+      workload:
+        module: workloads/setup-violation.js
+        arguments:
+          chaincodeId: directed-traceability
+          prefix: "perf"
+          poolSize: 100
+          kMax: 999          # quota never violated — overhead-only measurement
+          runTag: "p03"      # ← increment (p03 = M_L, p04 = M_D) for each run
+
+    # ── Round 2: Transfer at 50 TPS ────────────────────────────────────────────
+    - label: transfer-50
+      description: >
+        500 Transfer txs at 50 TPS (2 workers × 25 TPS each).
+        Pool of 100 resources per worker; ping-pong agentA ↔ agentB.
+        Expected: 500 Succ, 0 Fail (no MVCC at this rate with 100-resource pool).
+      txNumber: 500
+      rateControl:
+        type: fixed-rate
+        opts:
+          tps: 50
+      workload:
+        module: workloads/perf-transfer.js
+        arguments:
+          chaincodeId: directed-traceability
+          prefix: "perf"
+          poolSize: 100
+          runTag: "p03"      # ← must match setup-perf runTag
+
+    # ── Round 3: Transfer at 100 TPS ───────────────────────────────────────────
+    - label: transfer-100
+      description: >
+        500 Transfer txs at 100 TPS (2 workers × 50 TPS each).
+        Holder state persists across rounds via module-level Map (no C_auth cascade).
+        Expected: ≥ 480 Succ (< 5% MVCC failure rate with 100-resource pool).
+      txNumber: 500
+      rateControl:
+        type: fixed-rate
+        opts:
+          tps: 100
+      workload:
+        module: workloads/perf-transfer.js
+        arguments:
+          chaincodeId: directed-traceability
+          prefix: "perf"
+          poolSize: 100
+          runTag: "p03"      # ← must match setup-perf runTag
+
+    # ── Round 4: Transfer at 200 TPS ───────────────────────────────────────────
+    - label: transfer-200
+      description: >
+        500 Transfer txs at 200 TPS (2 workers × 100 TPS each).
+        Stress tier — may approach ordering service saturation.
+        Expected: ≥ 450 Succ; latency climbs due to block pipelining.
+      txNumber: 500
+      rateControl:
+        type: fixed-rate
+        opts:
+          tps: 200
+      workload:
+        module: workloads/perf-transfer.js
+        arguments:
+          chaincodeId: directed-traceability
+          prefix: "perf"
+          poolSize: 100
+          runTag: "p03"      # ← must match setup-perf runTag
