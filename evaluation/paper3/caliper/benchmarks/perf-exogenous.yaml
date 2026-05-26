@@ -1,0 +1,121 @@
+---
+# Benchmark: perf-exogenous
+#
+# Scenario 3 of §V — M_D exogenous: Transfer latency with ZooKeeper coordinator
+# pre-admission vs M_D endogenous (perf-overhead benchmark).
+#
+# Architecture:
+#   Client → POST /v1/reserve → Coordinator   (RTT_1)
+#   Client → endorse + submit → Fabric         (Fabric latency)
+#   Client → POST /v1/confirm → Coordinator   (RTT_2)
+#
+# The overhead vs M_D endogenous is exactly 2 × coordinator RTT per transaction.
+# With the coordinator on the same Docker network, RTT ≈ 0.1 ms (negligible).
+# The paper uses this to establish the best-case bound for M_D_exo; a remote
+# coordinator (20 ms WAN) would add ~40 ms per tx, shown analytically in §V.D.
+#
+# MaxConcurrent=999 → coordinator always admits → pure RTT overhead measurement.
+# Violations = 0 (same correctness guarantee as M_D endogenous).
+#
+# ── How to run ─────────────────────────────────────────────────────────────────
+#   cd ~/fabric/evaluation/paper3/network
+#   bash run-constraint.sh stop           # use standard orderers (M_D_exo = coordinator, not orderer)
+#   docker compose -f docker-compose-base.yaml -f docker-compose-zk.yaml up -d zkcoordinator
+#   cd ~/fabric/evaluation/paper3/caliper
+#   npx caliper launch manager \
+#     --caliper-workspace . \
+#     --caliper-networkconfig networks/paper3-network-resolved.yaml \
+#     --caliper-benchconfig benchmarks/perf-exogenous.yaml \
+#     --caliper-flow-only-test \
+#     2>&1 | tee results/perf-exogenous-z01.log
+
+test:
+  name: perf-exogenous
+  description: >
+    Scenario 3: M_D exogenous overhead — Transfer with ZK coordinator pre-admission.
+    Measures the cost of 2 extra HTTP round-trips per tx (reserve + confirm).
+    Compare avg/p99 latency and throughput vs perf-overhead (M_D endogenous).
+
+  workers:
+    number: 2
+
+  rounds:
+    # ── Round 1: pool setup ────────────────────────────────────────────────────
+    # Registers 200 resources with SubsetGroup + maxConcurrent=999.
+    # Coordinator will see this group and track it speculatively.
+    - label: setup-exo
+      description: >
+        Register 200 performance-test resources (100 per worker) for the
+        exogenous benchmark.  Same pool design as perf-overhead; runTag z01
+        avoids collision with perf runs.  Expected: 200 Succ, 0 Fail.
+      txNumber: 200
+      rateControl:
+        type: fixed-rate
+        opts:
+          tps: 20
+      workload:
+        module: workloads/setup-violation.js
+        arguments:
+          chaincodeId: directed-traceability
+          prefix: "perf"
+          poolSize: 100
+          kMax: 999
+          runTag: "z01"      # ← use z02 for second run if needed
+
+    # ── Round 2: Transfer at 50 TPS ────────────────────────────────────────────
+    - label: transfer-50
+      description: >
+        500 Transfer txs at 50 TPS through the ZK coordinator.
+        Each tx: reserve → fabric → confirm (3 steps, 2 extra RTTs).
+        Expected: 500 Succ, 0 Fail; latency ≈ M_D_endo + 2 × coordinator RTT.
+      txNumber: 500
+      rateControl:
+        type: fixed-rate
+        opts:
+          tps: 50
+      workload:
+        module: workloads/perf-exogenous.js
+        arguments:
+          chaincodeId: directed-traceability
+          prefix: "perf"
+          poolSize: 100
+          runTag: "z01"
+          coordinatorUrl: "http://zkcoordinator:8080"
+
+    # ── Round 3: Transfer at 100 TPS ───────────────────────────────────────────
+    - label: transfer-100
+      description: >
+        500 Transfer txs at 100 TPS through the ZK coordinator.
+        Coordinator mutex serializes Reserve calls — may become a bottleneck.
+      txNumber: 500
+      rateControl:
+        type: fixed-rate
+        opts:
+          tps: 100
+      workload:
+        module: workloads/perf-exogenous.js
+        arguments:
+          chaincodeId: directed-traceability
+          prefix: "perf"
+          poolSize: 100
+          runTag: "z01"
+          coordinatorUrl: "http://zkcoordinator:8080"
+
+    # ── Round 4: Transfer at 200 TPS ───────────────────────────────────────────
+    - label: transfer-200
+      description: >
+        500 Transfer txs at 200 TPS through the ZK coordinator.
+        Stress tier — coordinator mutex may serialise admission to < 200 eff. TPS.
+      txNumber: 500
+      rateControl:
+        type: fixed-rate
+        opts:
+          tps: 200
+      workload:
+        module: workloads/perf-exogenous.js
+        arguments:
+          chaincodeId: directed-traceability
+          prefix: "perf"
+          poolSize: 100
+          runTag: "z01"
+          coordinatorUrl: "http://zkcoordinator:8080"
