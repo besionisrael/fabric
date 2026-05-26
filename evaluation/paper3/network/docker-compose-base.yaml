@@ -14,6 +14,7 @@ volumes:
 services:
   # ── Orderer nodes ──────────────────────────────────────────────────────────
   orderer0.example.com:
+    restart: unless-stopped
     image: ${FABRIC_IMAGE:-hyperledger/fabric-orderer}:${FABRIC_TAG:-latest}
     environment:
       - FABRIC_LOGGING_SPEC=INFO
@@ -52,6 +53,7 @@ services:
       - paper3
 
   orderer1.example.com:
+    restart: unless-stopped
     image: ${FABRIC_IMAGE:-hyperledger/fabric-orderer}:${FABRIC_TAG:-latest}
     environment:
       - FABRIC_LOGGING_SPEC=INFO
@@ -90,6 +92,7 @@ services:
       - paper3
 
   orderer2.example.com:
+    restart: unless-stopped
     image: ${FABRIC_IMAGE:-hyperledger/fabric-orderer}:${FABRIC_TAG:-latest}
     environment:
       - FABRIC_LOGGING_SPEC=INFO
@@ -129,6 +132,7 @@ services:
 
   # ── Peer nodes ─────────────────────────────────────────────────────────────
   peer0.org1.example.com:
+    restart: unless-stopped
     image: ${FABRIC_IMAGE:-hyperledger/fabric-peer}:${FABRIC_TAG:-latest}
     environment:
       - CORE_VM_ENDPOINT=unix:///host/var/run/docker.sock
@@ -164,6 +168,7 @@ services:
       - paper3
 
   peer1.org1.example.com:
+    restart: unless-stopped
     image: ${FABRIC_IMAGE:-hyperledger/fabric-peer}:${FABRIC_TAG:-latest}
     environment:
       - CORE_VM_ENDPOINT=unix:///host/var/run/docker.sock
@@ -200,6 +205,7 @@ services:
 
   # ── Prometheus (metrics collection) ────────────────────────────────────────
   prometheus:
+    restart: unless-stopped
     image: prom/prometheus:latest
     volumes:
       - ./prometheus.yaml:/etc/prometheus/prometheus.yml

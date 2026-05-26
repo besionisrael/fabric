@@ -15,8 +15,8 @@ lifecycle, a use-case-agnostic constraint layer embedded in the Raft orderer
 (\arch{M_D} endogenous), a lightweight HTTP coordinator paired with a standard
 Fabric network (\arch{M_D} exogenous, ZooKeeper baseline), and a Caliper
 workload driver that runs all three variants under identical network conditions.
-The total implementation adds approximately 3\,200 lines of Go and
-400 lines of JavaScript to the Fabric tree; no modifications to the Fabric peer
+The total implementation adds approximately 2\,700 lines of Go and
+1\,100 lines of JavaScript to the Fabric tree; no modifications to the Fabric peer
 or the gossip/delivery layers are required.
 
 %-------------------------------------------------------------
@@ -509,9 +509,9 @@ Peer snapshot (\texttt{peersnapshot})      & 328  & —   \\
 Orderer hook points (\texttt{chain}, \texttt{consenter}) & 95 & — \\
 ZooKeeper coordinator                      & 490  & —   \\
 Unit tests (constraint, chain)             & 415  & —   \\
-Caliper workload drivers                   & —    & 410 \\
+Caliper workload drivers                   & —    & 1\,079 \\
 \midrule
-\textbf{Total}                             & \textbf{2\,683} & \textbf{410} \\
+\textbf{Total}                             & \textbf{2\,683} & \textbf{1\,079} \\
 \bottomrule
 \end{tabular}
 \end{table}
