@@ -1,0 +1,129 @@
+Key Files and Purpose
+Configuration & Setup:
+
+README.md — Overview of three baseline architectures (fabric-std, zk-exogenous, orderer-endogenous) and running instructions
+network/crypto-config.yaml — Cryptographic material configuration (1 org, 3 orderers, 2 peers)
+network/configtx.yaml — Channel configuration for Fabric network
+network/docker-compose-base.yaml — Main Fabric network orchestration (shared across all 3 runs)
+network/docker-compose-constraint.yaml — Constraint-aware orderer variant configuration
+network/docker-compose-zk.yaml — ZooKeeper coordinator sidecar configuration
+Benchmark Configurations (Caliper):
+
+caliper/benchmarks/fabric-std.yaml — Baseline without constraint enforcement (M_L)
+caliper/benchmarks/zk-exogenous.yaml — ZK coordinator with Reserve/Confirm (M_D exogenous)
+caliper/benchmarks/orderer-endogenous.yaml — Constraint-aware orderer (M_D endogenous single Raft)
+caliper/benchmarks/perf-exogenous.yaml — Performance evaluation (exogenous variant)
+caliper/benchmarks/perf-overhead.yaml — Overhead measurement configuration
+caliper/benchmarks/violation-quota.yaml — Violation detection and quota constraints
+Workload Scripts (JavaScript/Node.js):
+
+caliper/workload/register.js — Resource registration workload (common)
+caliper/workload/transfer-std.js — Transfer without pre-check (M_L baseline)
+caliper/workload/transfer-zk.js — Transfer with ZK Reserve/Confirm round-trip
+caliper/workload/transfer-endogenous.js — Direct transfer (orderer enforces constraints)
+caliper/workloads/perf-exogenous.js — Performance workload for exogenous model
+caliper/workloads/violation-quota.js — Quota violation testing workload
+Analysis & Reporting:
+
+caliper/plot-results.py — Matplotlib-based result visualization (15.6 KB, ~450 lines)
+scripts/plot-results.py — Additional result plotting utility (5.4 KB)
+scripts/audit-ivr.js — IVR (intra-block violation rate) post-hoc ledger audit
+paper_section_evaluation.tex — LaTeX section documenting evaluation results
+paper_section_implementation.tex — LaTeX section on architecture implementation
+Network Setup & Execution:
+
+network/generate.sh — Crypto material and artifact generation
+network/run-constraint.sh — Constraint-aware orderer variant startup
+scripts/run-all.sh — Sequential execution of all three benchmark variants
+caliper/setup-caliper.sh — Caliper benchmarking environment initialization
+Results:
+
+caliper/results/ — Generated performance figures (throughput, latency, violations, overhead) as PDF/PNG and raw logs
+README Content
+The README provides context for three architectures being compared:
+
+fabric-std: Standard Fabric with chaincode-local validation only (M_L), IVR > 0
+zk-exogenous: ZooKeeper + Fabric with pre-submission coordinator (M_D exogenous), IVR = 0 (conditional on client faithfulness)
+orderer-endogenous: Constraint-aware orderer with single Raft round (M_D endogenous), IVR = 0
+Key metrics collected: throughput (tx/s), latency (p50/p95/p99 ms), intra-block rejection rate, IVR (intra-block violation rate), and coordinator overhead.
+
+2. D:\Workspace\BlockchainApps\fabric\orderer\consensus\etcdraft\constraint
+Full Directory Tree
+orderer/consensus/etcdraft/constraint/
+├── evaluator.go (6,667 bytes, ~220 lines)
+├── cache.go (7,052 bytes, ~260 lines)
+├── cache_test.go (11,122 bytes, ~380 lines)
+├── biobank/
+│   └── evaluator.go (16,998 bytes, ~480 lines)
+└── peersnapshot/
+    └── snapshot.go (10,466 bytes, ~340 lines)
+Total Go code: ~1,400 lines
+
+Key Files and Purpose
+evaluator.go (220 lines) — Generic ConstraintEvaluator interface (Definition 1) and TxView projection; domain-agnostic constraint evaluation framework
+cache.go (260 lines) — StateManager implementing stable/speculative CacheState pair (Definition 2) with queue-based multi-in-flight correctness (Proposition 1, C3)
+cache_test.go (380 lines) — Unit tests for StateManager lifecycle and multi-block constraint enforcement
+biobank/evaluator.go (480 lines) — Concrete Evaluator implementation for biobank use case (material transfer agreements, concurrent holder constraints)
+peersnapshot/snapshot.go (340 lines) — Peer-facing transaction view snapshot mechanism for constraint evaluation at endorsement/ordering time
+Package Documentation
+The constraint package implements the constraint-aware ordering service defined in Paper 3, §III. It provides:
+
+Generic ConstraintEvaluator interface (Definition 1)
+Stable/speculative CacheState pair (Definition 2)
+Block construction loop (Algorithm 1)
+Use-case agnostic: callers supply a concrete Evaluator implementation encoding their constraint set C. The biobank instantiation is in the sibling biobank subpackage.
+
+3. D:\Workspace\BlockchainApps\fabric\tools\zkcoordinator
+Full Directory Tree
+tools/zkcoordinator/
+├── go.mod (66 bytes)
+├── Dockerfile (257 bytes)
+├── main.go (5,154 bytes, ~150 lines)
+└── coordinator.go (8,617 bytes, ~290 lines)
+Total Go code: ~440 lines
+Dependencies: Go 1.22 (standalone module, minimal dependencies)
+
+Key Files and Purpose
+go.mod (66 bytes) — Module declaration: github.com/hyperledger/fabric/tools/zkcoordinator
+main.go (150 lines) — HTTP server entry point exposing Reserve/Confirm/Cancel/Release/Status endpoints; background goroutine for stale reservation expiry (10s interval)
+coordinator.go (290 lines) — In-memory coordinator state management with mutex serialization; implements M_D exogenous architecture (Paper 3, §III.B)
+Dockerfile (12 lines) — Multi-stage build: Go 1.22 builder + Alpine runtime, exposes port 8080
+Package Documentation
+Implements the ZooKeeper-coordinated baseline (Paper 3, §III.B). This is the "external coordination service" of the ZK + DLT baseline, evaluating global usage constraints (C_global) before transaction submission.
+
+Protocol:
+
+Client calls Reserve(group, agent, maxConcurrent) before endorsing
+If admitted: coordinator reserves a slot and returns reservation ID
+Client endorses/submits transaction to Fabric
+After commit: client calls Confirm(reservationID)
+After abort: client calls Cancel(reservationID)
+Implementation note: In-memory state with mutex serialization; production would use ZooKeeper znodes and distributed ephemeral locks.
+
+4. D:\Workspace\BlockchainApps\fabric\integration\chaincode\directed
+Full Directory Tree
+integration/chaincode/directed/
+├── go.mod (539 bytes)
+├── main.go (260 bytes, ~17 lines)
+├── chaincode.go (22,250 bytes, ~620 lines)
+└── model.go (5,041 bytes, ~180 lines)
+Total Go code: ~817 lines
+Dependencies: Go 1.24.0, fabric-chaincode-go/v2, fabric-protos-go-apiv2
+
+Key Files and Purpose
+go.mod (539 bytes) — Module: github.com/hyperledger/fabric/integration/chaincode/directed; requires fabric-chaincode-go v2.0.0 and protos-go-apiv2 v0.3.3
+main.go (17 lines) — Chaincode entry point; instantiates DirectedTraceability and calls shim.Start()
+chaincode.go (620 lines) — DirectedTraceability chaincode implementation enforcing local constraints (C_auth, C_conditions, C_propagation, C_status, C_expiry, C_transfers) at endorsement time; functions: RegisterResource, Transfer, Use, Publish, Revoke, GetResource, GetTrace, ListByGroup, GetAllResources
+model.go (180 lines) — Resource struct (core traceable entity with ID, Type, Origin, CurrentHolder, SubsetGroup, Conditions); Conditions struct encoding governance rules; TraceEntry definition for append-only directed trace
+Chaincode Documentation
+DirectedTraceability implements the directed traceability protocol (M_D), enforcing local constraints at endorsement time. Global concurrent constraint (C_global) is evaluated by the constraint-aware orderer or ZooKeeper coordinator (Paper 3's three architectures).
+
+Resource Model: Use-case agnostic traceable entities with domain semantics in Type field (e.g., "specimen", "dataset", "funds") and governance rules in Conditions field traveling with resource through transfers. Trace is append-only, valid by construction (Paper 2, Def. 9).
+
+Summary Table
+Area	Type	Files	Code	Purpose
+paper3	Evaluation	49	Config/Script	Benchmark setup for 3 architectures; Caliper configs, workloads, analysis scripts, results
+constraint	Go Pkg	5	~1,400 lines	Generic constraint evaluator framework + biobank impl; cache state management
+zkcoordinator	Go Tool	4	~440 lines	External coordination service HTTP server (Reserve/Confirm protocol)
+directed	Chaincode	4	~817 lines	Directed traceability chaincode; resource model + local constraint enforcement
+All areas reference Paper 3 architecture variants: standard (M_L), exogenous ZK (M_D), and endogenous orderer (M_D).
