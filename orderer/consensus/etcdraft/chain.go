@@ -304,6 +304,7 @@ func NewChain(
 			DataPersistDuration:     opts.Metrics.DataPersistDuration.With("channel", support.ChannelID()),
 			NormalProposalsReceived: opts.Metrics.NormalProposalsReceived.With("channel", support.ChannelID()),
 			ConfigProposalsReceived: opts.Metrics.ConfigProposalsReceived.With("channel", support.ChannelID()),
+			ConstraintRejections:    opts.Metrics.ConstraintRejections.With("channel", support.ChannelID()),
 		},
 		logger:         lg,
 		opts:           opts,
