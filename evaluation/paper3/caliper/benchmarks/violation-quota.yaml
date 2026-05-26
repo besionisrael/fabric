@@ -3,51 +3,90 @@
 #
 # Measures the C_global quota violation rate under the three enforcement variants.
 #
-# Run this benchmark TWICE:
+# IMPORTANT — runTag must be changed between runs to avoid "resource already exists"
+# errors from the setup round.  Use r01 for the first run, r02 for the second, etc.
+#
+# Run this benchmark TWICE (changing runTag each time):
 #   1. With standard orderers (fabric-std / zk-exogenous):
 #        caliper launch manager ... --caliper-benchconfig benchmarks/violation-quota.yaml
-#        → record Succ/Fail, then run measure-violations.sh
+#        → record Succ/Fail from quota-violation round
+#        → bash measure-violations.sh r01 2
 #
 #   2. With custom orderer (orderer-endogenous):
-#        Swap orderer image (see README), then re-run same command.
-#        → record Succ/Fail, then run measure-violations.sh
+#        Swap orderer image (see README), change runTag to r02, then re-run.
+#        → record Succ/Fail from quota-violation round
+#        → bash measure-violations.sh r02 2
 #
 # Expected results:
-#   fabric-std / zk-exogenous:
-#     All POOL_SIZE transfers succeed per worker → |S_sub| = POOL_SIZE+1 >> K_MAX
-#     Violation count = Succ - (K_MAX - 1)
+#   fabric-std:
+#     setup-pool round:  40 Succ, 0 Fail  (all registrations committed)
+#     quota-violation:   40 Succ, 0 Fail  (MVCC gap — all transfers admitted)
+#     |S_sub| per group: 21 (init-agent + 20 violators) >> K_MAX=2
+#     Violations per worker: 19.  Total: 38.
 #
 #   orderer-endogenous:
-#     Only (K_MAX - 1) = 1 transfer succeeds per worker (introduces 1 new holder)
-#     Remaining POOL_SIZE - 1 timeout (orderer drops them from block)
-#     |S_sub| = K_MAX = 2 → 0 violations
+#     setup-pool round:  40 Succ, 0 Fail  (registrations unaffected)
+#     quota-violation:   2 Succ, 38 Fail/Timeout (orderer drops excess transfers)
+#     |S_sub| per group: 2 (init-agent + 1 admitted violator) = K_MAX=2
+#     Violations per worker: 0.  Total: 0.
 #
-# Design note: poolSize = 20, K_MAX = 2, 2 workers → 40 total Transfer attempts.
-# Expected violations in fabric-std: 40 - 2*(K_MAX-1) = 40 - 2 = 38.
-# Expected violations in orderer-endo: 0.
+# Design note:
+#   poolSize=20, K_MAX=2, 2 workers → 40 total Transfer attempts.
+#   The quota is exceeded after the FIRST transfer per worker (K_MAX-1=1 new holder).
+#   fabric-std admits all 40 → 38 violations.
+#   orderer-endo admits 2 → 0 violations.
 
 test:
   name: violation-quota
   description: >
     C_global quota violation rate under concurrent Transfers.
     K_MAX = 2 concurrent holders per SubsetGroup.
+    Two rounds: setup-pool registers the resource pool, quota-violation bursts Transfers.
     Measures whether the orderer enforces MaxConcurrent under concurrent load.
 
   workers:
     number: 2
 
   rounds:
+    # ── Round 1: pool setup ────────────────────────────────────────────────────
+    # Registers 40 resources (20 per worker) via submitTransaction so Caliper
+    # tracks success/failure.  All 40 should succeed; 0 failures expected.
+    # Resources are registered with SubsetGroup + MaxConcurrent set.
+    - label: setup-pool
+      description: >
+        Register violation test resource pool. 40 resources total (20 per worker),
+        each in a per-worker SubsetGroup with MaxConcurrent = 2.
+        Expected: 40 Succ, 0 Fail.
+      txNumber: 40
+      rateControl:
+        type: fixed-rate
+        opts:
+          tps: 10    # slow: sequential registrations, no quota pressure here
+      workload:
+        module: workloads/setup-violation.js
+        arguments:
+          chaincodeId: directed-traceability
+          prefix: "viol"
+          poolSize: 20
+          kMax: 2
+          runTag: "r01"   # ← increment for each re-run: r01, r02, r03 …
+
+    # ── Round 2: quota violation burst ────────────────────────────────────────
+    # Burst 40 concurrent Transfers (20 per worker) to unique new agents.
+    # Every transfer introduces a fresh agent into S_sub.
+    # fabric-std:         all 40 succeed → |S_sub| = 21 >> K_MAX (38 violations)
+    # orderer-endogenous: 2 succeed, 38 timeout → |S_sub| = 2 = K_MAX (0 violations)
     - label: quota-violation
       description: >
-        Burst 40 concurrent Transfers (20 per worker) to unique new agents,
-        all resources in the same per-worker SubsetGroup with MaxConcurrent = 2.
-        fabric-std: all succeed (38 violations).
+        Burst 40 concurrent Transfers to unique new agents.
+        Each transfer introduces a fresh agent into S_sub.
+        fabric-std: all 40 succeed (38 violations per K_MAX=2 cap).
         orderer-endogenous: 2 succeed, 38 timeout (0 violations).
       txNumber: 40
       rateControl:
         type: fixed-rate
         opts:
-          tps: 50
+          tps: 50   # high rate to maximise concurrency pressure
       workload:
         module: workloads/violation-quota.js
         arguments:
@@ -55,3 +94,4 @@ test:
           prefix: "viol"
           poolSize: 20
           kMax: 2
+          runTag: "r01"   # ← must match setup-pool runTag above

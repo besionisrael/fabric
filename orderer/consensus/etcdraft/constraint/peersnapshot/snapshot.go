@@ -51,7 +51,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-const defaultChaincodeID = "directed"
+const defaultChaincodeID = "directed-traceability"
 
 // Config holds the parameters required to contact the trusted peer.
 type Config struct {

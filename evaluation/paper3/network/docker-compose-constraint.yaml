@@ -1,0 +1,63 @@
+---
+# docker-compose-constraint.yaml — overlay for constraint-aware orderer (M_D)
+#
+# Usage:
+#   docker compose -f docker-compose-base.yaml -f docker-compose-constraint.yaml \
+#     up -d orderer0.example.com orderer1.example.com orderer2.example.com
+#
+# This overlay adds FABRIC_CONSTRAINT_CHANNELS and peer snapshot config to the
+# three orderer services, activating the BioankEvaluator (Paper 3, §III.A, M_D).
+#
+# The orderer image must be fabric-orderer-constraint:directed-traceability.
+# Set that via the FABRIC_IMAGE / FABRIC_TAG env vars before running:
+#   FABRIC_IMAGE=fabric-orderer-constraint FABRIC_TAG=directed-traceability \
+#     docker compose -f docker-compose-base.yaml -f docker-compose-constraint.yaml \
+#     up -d orderer0.example.com orderer1.example.com orderer2.example.com
+#
+# The BioankEvaluator.Init is tolerant of peer snapshot failures: if the peer
+# is unreachable or returns an error it logs a warning and starts with an empty
+# cache, which is then populated via Apply as registration transactions flow
+# through.  This is correct for the benchmark (resources registered post-startup).
+#
+# For the cert paths, the Admin@org1 identity is used as the query reader.
+# run-constraint.sh discovers the keystore key filename and creates the symlink
+# constraint-reader-key.pem before starting this compose.
+
+version: '3.7'
+
+x-constraint-env: &constraint-env
+  # Activate the constraint evaluator for paper3channel.
+  FABRIC_CONSTRAINT_CHANNELS: paper3channel
+  # Peer to query for the world-state snapshot at Init time.
+  FABRIC_CONSTRAINT_PEER_ADDR: peer0.org1.example.com:7051
+  FABRIC_CONSTRAINT_READER_MSP: Org1MSP
+  # Chaincode name — must match the deployed chaincode.
+  FABRIC_CONSTRAINT_CHAINCODE: directed-traceability
+  # Paths inside the container (mapped via the volumes below).
+  FABRIC_CONSTRAINT_PEER_TLSCA:  /var/hyperledger/constraint/peer-tlsca.crt
+  FABRIC_CONSTRAINT_READER_CERT: /var/hyperledger/constraint/reader-cert.pem
+  FABRIC_CONSTRAINT_READER_KEY:  /var/hyperledger/constraint/reader-key.pem
+
+x-constraint-vols: &constraint-vols
+  # Peer0 TLS CA — for TLS verification when the orderer queries the peer.
+  - ./crypto-config/peerOrganizations/org1.example.com/peers/peer0.org1.example.com/tls/ca.crt:/var/hyperledger/constraint/peer-tlsca.crt:ro
+  # Admin@org1 signing certificate.
+  - ./crypto-config/peerOrganizations/org1.example.com/users/Admin@org1.example.com/msp/signcerts/Admin@org1.example.com-cert.pem:/var/hyperledger/constraint/reader-cert.pem:ro
+  # Admin@org1 private key — symlinked to a fixed name by run-constraint.sh.
+  - ./crypto-config/constraint-reader-key.pem:/var/hyperledger/constraint/reader-key.pem:ro
+
+services:
+  orderer0.example.com:
+    environment:
+      <<: *constraint-env
+    volumes: *constraint-vols
+
+  orderer1.example.com:
+    environment:
+      <<: *constraint-env
+    volumes: *constraint-vols
+
+  orderer2.example.com:
+    environment:
+      <<: *constraint-env
+    volumes: *constraint-vols

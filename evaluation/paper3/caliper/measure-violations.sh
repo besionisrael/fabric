@@ -8,23 +8,23 @@
 #
 # Usage:
 #   source ~/fabric/evaluation/paper3/network/env.sh
-#   bash measure-violations.sh <runId> [kMax]
+#   bash measure-violations.sh <runTag> [kMax]
 #
 # Arguments:
-#   runId   — the timestamp prefix used in resource IDs (e.g. 1748214567890)
-#             Printed by the workload at initializeWorkloadModule time.
-#             If omitted, queries ALL groups starting with "viol-group-".
+#   runTag  — the tag used in the benchmark YAML (e.g. r01, r02, …)
+#             Group IDs are: viol-group-w0-<runTag>, viol-group-w1-<runTag>
 #   kMax    — MaxConcurrent quota (default: 2)
 #
 # Example:
-#   bash measure-violations.sh 1748214567890 2
+#   bash measure-violations.sh r01 2
+#   bash measure-violations.sh r02 2
 
 set -euo pipefail
 
 CHAINCODE="directed-traceability"
 CHANNEL="paper3channel"
 K_MAX="${2:-2}"
-RUN_ID="${1:-}"
+RUN_TAG="${1:?Usage: bash measure-violations.sh <runTag> [kMax]}"
 
 ORDERER_ENDPOINT="orderer0.example.com:7050"
 ORDERER_CA="$HOME/fabric/evaluation/paper3/network/crypto-config/ordererOrganizations/example.com/orderers/orderer0.example.com/msp/tlscacerts/tlsca.example.com-cert.pem"
@@ -33,21 +33,16 @@ echo "=== C_global Violation Measurement ==="
 echo "Channel:     $CHANNEL"
 echo "Chaincode:   $CHAINCODE"
 echo "K_MAX:       $K_MAX"
-echo "Run ID:      ${RUN_ID:-'(all runs)'}"
+echo "Run tag:     $RUN_TAG"
+echo "Groups:      viol-group-w0-${RUN_TAG}, viol-group-w1-${RUN_TAG}"
 echo ""
 
 total_violations=0
 total_groups=0
 
-# Find all groups for this run (workers 0 and 1 each have their own group).
+# Workers 0 and 1 each have their own per-worker SubsetGroup.
 for worker in 0 1; do
-    if [ -n "$RUN_ID" ]; then
-        GROUP_ID="viol-group-w${worker}-${RUN_ID}"
-    else
-        echo "No runId provided — querying by prefix is not supported by ListByGroup."
-        echo "Re-run with: bash measure-violations.sh <runId>"
-        exit 1
-    fi
+    GROUP_ID="viol-group-w${worker}-${RUN_TAG}"
 
     echo "--- Worker ${worker}: group = ${GROUP_ID} ---"
 
@@ -66,7 +61,7 @@ for worker in 0 1; do
         continue
     fi
 
-    # Count distinct currentHolder values.
+    # Count distinct currentHolder values across active resources.
     HOLDER_COUNT=$(echo "$RAW" | python3 -c "
 import json, sys
 resources = json.load(sys.stdin)
