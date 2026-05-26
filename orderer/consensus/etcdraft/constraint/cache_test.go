@@ -211,3 +211,75 @@ func TestProcessBatch_SequentialEquivalence(t *testing.T) {
 	assert.Equal(t, batch[:2], admitted, "exactly first 2 admitted (sequential state advance)")
 	assert.Equal(t, batch[2:], rejected)
 }
+
+// ── Multi-in-flight K_max enforcement (Paper 3, Proposition 1, C3) ───────────
+
+func TestMultiInflight_KMaxEnforcedGlobally(t *testing.T) {
+	// When MaxInflightBlocks > 1, several blocks can be in flight before any
+	// is committed.  With the queue-based design, the K_max cap must be
+	// respected globally across all in-flight blocks, not independently per
+	// block.  Previously, each BeginBatch reset speculative to stable, allowing
+	// every block to admit up to K_max independently — this test catches that.
+	//
+	// Setup: maxCount=2 (analogous to K_max=2 for C_global).
+	// Three consecutive batches are filtered without any Commit in between
+	// (simulating 3 blocks in flight simultaneously).
+	// Expected: batch1 admits 2, batch2 and batch3 admit 0 (already at cap).
+	sm := newStateManager(t, 2)
+
+	// Batch 1: first block in flight.
+	sm.BeginBatch() // queue=[], resets speculative to stable (count=0)
+	a1, r1 := sm.ProcessBatch([]*common.Envelope{env("admit"), env("admit"), env("admit")})
+	require.Len(t, a1, 2, "batch1: exactly 2 admitted (K_max=2)")
+	require.Len(t, r1, 1, "batch1: 1 rejected (would exceed K_max)")
+
+	// Batch 2: second block in flight, no Commit yet.
+	// BeginBatch must NOT reset speculative (queue is non-empty).
+	sm.BeginBatch()
+	a2, r2 := sm.ProcessBatch([]*common.Envelope{env("admit"), env("admit")})
+	assert.Empty(t, a2, "batch2: 0 admitted — K_max already reached in batch1")
+	assert.Len(t, r2, 2, "batch2: all rejected")
+
+	// Batch 3: third block in flight.
+	sm.BeginBatch()
+	a3, r3 := sm.ProcessBatch([]*common.Envelope{env("admit")})
+	assert.Empty(t, a3, "batch3: 0 admitted — K_max still reached")
+	assert.Len(t, r3, 1)
+
+	// Commit block1: stable advances to post-batch1 state.
+	sm.Commit()
+	// Commit for blocks 2 and 3 is no-op (all-rejected; no queue entries).
+	sm.Commit() // no-op
+	sm.Commit() // no-op
+
+	// After all commits, a new batch must also be blocked (stable has count=2).
+	sm.BeginBatch() // queue=[], resets to stable (count=2)
+	a4, _ := sm.ProcessBatch([]*common.Envelope{env("admit")})
+	assert.Empty(t, a4, "after commit, new batch still at K_max — no more admitted")
+}
+
+func TestMultiInflight_RollbackRestoresAllInFlight(t *testing.T) {
+	// After a Rollback (leader change), all in-flight speculative state is
+	// discarded.  The next batch must start from the last committed stable state.
+	sm := newStateManager(t, 2)
+
+	// Batch 1: admit 2, queue=[{count:2}]
+	sm.BeginBatch()
+	a1, _ := sm.ProcessBatch([]*common.Envelope{env("admit"), env("admit")})
+	require.Len(t, a1, 2)
+
+	// Batch 2 in flight (no Commit yet): all rejected since at cap.
+	sm.BeginBatch()
+	a2, _ := sm.ProcessBatch([]*common.Envelope{env("admit")})
+	assert.Empty(t, a2)
+
+	// Leader change: Rollback discards everything.
+	sm.Rollback()
+
+	// After rollback, speculative = stable = initial (count=0).
+	// A new batch must admit up to K_max again.
+	sm.BeginBatch()
+	a3, r3 := sm.ProcessBatch([]*common.Envelope{env("admit"), env("admit")})
+	assert.Len(t, a3, 2, "after rollback, K_max slots available again")
+	assert.Empty(t, r3)
+}

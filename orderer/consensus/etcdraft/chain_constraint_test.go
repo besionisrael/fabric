@@ -52,7 +52,7 @@ func (f *fakeConstraintMgr) Rollback() { f.rollbackCalls++ }
 // minimalChain builds a Chain with only the fields filterBatch touches.
 func minimalChain(t *testing.T) *Chain {
 	t.Helper()
-	p := disabled.NewProvider()
+	p := &disabled.Provider{}
 	metrics := NewMetrics(p)
 	return &Chain{
 		logger:  flogging.MustGetLogger("test"),

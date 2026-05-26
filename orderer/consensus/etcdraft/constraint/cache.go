@@ -10,17 +10,48 @@ import (
 // Paper 3, Definition 2, and coordinates the lifecycle operations of
 // Definition 1 (Init, Commit, Rollback).
 //
-// It is owned by the Raft leader's block construction goroutine.
-// All public methods are called from that single goroutine under the
-// sequential constraint C2 (Proposition 1), so no internal locking is
-// required for the stable/speculative pair. The mu guard protects only the
-// commit/rollback path which is called from the Raft apply goroutine.
+// # Multi-in-flight correctness (Paper 3, Proposition 1, C3)
+//
+// When MaxInflightBlocks > 1, the Raft leader can propose several blocks
+// before any of them is acknowledged by a quorum.  The original
+// BeginBatch-resets-to-stable design would allow each of those blocks to
+// independently admit up to K_max transactions, violating C_global across
+// block boundaries.
+//
+// The queue-based design fixes this:
+//
+//   - BeginBatch resets speculative to stable ONLY when no blocks are
+//     in flight (queue is empty).  When blocks are already in flight it is
+//     a no-op, and ProcessBatch continues from the current accumulated
+//     speculative state.
+//
+//   - ProcessBatch appends a snapshot of the post-batch speculative state
+//     to the queue whenever at least one envelope is admitted (i.e., a block
+//     WILL be proposed for this batch).  The queue therefore has exactly one
+//     entry per proposed-but-not-yet-committed block.
+//
+//   - Commit pops the oldest queue entry and promotes it to stable,
+//     advancing the constraint baseline by exactly one Raft-committed block.
+//
+//   - Rollback resets speculative to the current stable and clears the
+//     queue, discarding all in-flight speculative state.
+//
+// Consequence: the evaluator sees K_max as a true global cap across ALL
+// in-flight blocks, not per-block.
+//
+// # Thread safety
+//
+// StateManager is owned by the Raft leader's block-construction goroutine.
+// BeginBatch and ProcessBatch are always called from that goroutine.
+// Commit and Rollback are called from the Raft apply goroutine.
+// The mu guard protects the queue and stable fields that are accessed from
+// both goroutines.
 type StateManager struct {
 	mu          sync.Mutex
 	evaluator   Evaluator
-	stable      CacheState // s_stable: last Raft-committed state (Def. 2, I1)
-	speculative CacheState // s_spec:   working copy for current batch  (Def. 2, I2)
-	inBatch     bool       // true while a batch is under construction
+	stable      CacheState   // s_stable: last Raft-committed state (Def. 2, I1)
+	speculative CacheState   // s_spec:   cumulative working state across in-flight blocks
+	queue       []CacheState // one post-batch snapshot per proposed-but-uncommitted block
 }
 
 // NewStateManager creates a StateManager and initialises the stable state by
@@ -39,14 +70,24 @@ func NewStateManager(evaluator Evaluator, snapshot WorldStateSnapshot) (*StateMa
 	}, nil
 }
 
-// BeginBatch starts a new batch construction cycle.
-// It clones the stable state into the speculative state (Def. 2, I2: s^spec_0 = s^stable).
-// Must be called before the first Evaluate call in each batch.
+// BeginBatch marks the start of a new batch construction cycle.
+//
+// When no blocks are in flight (queue is empty) it resets the speculative
+// state to the current stable state (Def. 2, I2: s^spec_0 = s^stable).
+//
+// When blocks are already in flight (queue is non-empty) it is a no-op:
+// speculative already reflects the cumulative effect of all admitted
+// transactions from earlier batches, and the next batch must continue from
+// that point to preserve the K_max cap across block boundaries.
 func (sm *StateManager) BeginBatch() {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	sm.speculative = sm.stable.Clone()
-	sm.inBatch = true
+	if len(sm.queue) == 0 {
+		// No in-flight blocks: start fresh from the last committed state.
+		sm.speculative = sm.stable.Clone()
+	}
+	// else: in-flight blocks exist; continue building on the cumulative
+	// speculative state so that K_max is enforced globally, not per-block.
 }
 
 // ProcessBatch evaluates every envelope in the batch against the evolving
@@ -59,8 +100,12 @@ func (sm *StateManager) BeginBatch() {
 //  4. If Conf = 0: reject, keep s_spec unchanged.
 //
 // Returns admitted and rejected envelope slices in arrival order.
-// The speculative state after this call reflects the net effect of all
-// admitted transactions; it is promoted to stable by Commit on Raft success.
+//
+// If at least one envelope is admitted, ProcessBatch appends a snapshot of
+// the post-batch speculative state to the queue.  This snapshot is consumed
+// by Commit when the corresponding Raft entry is acknowledged.  If no
+// envelopes are admitted, the queue is left unchanged (no block will be
+// proposed for this batch, so no Commit will fire).
 func (sm *StateManager) ProcessBatch(envelopes []*common.Envelope) (admitted, rejected []*common.Envelope) {
 	parser := sm.evaluator.TxParser()
 
@@ -80,43 +125,51 @@ func (sm *StateManager) ProcessBatch(envelopes []*common.Envelope) (admitted, re
 			rejected = append(rejected, env)
 		}
 	}
+
+	// Checkpoint the post-batch speculative state iff a block will be proposed.
+	// filterBatch only proposes a block when len(admitted) > 0, so we use the
+	// same condition here to keep the queue length in sync with blockInflight.
+	if len(admitted) > 0 {
+		sm.mu.Lock()
+		sm.queue = append(sm.queue, sm.speculative.Clone())
+		sm.mu.Unlock()
+	}
+
 	return admitted, rejected
 }
 
-// Commit promotes the speculative state to stable after the Raft quorum
-// confirms a block. This is the Commit operation of Definition 1 and
-// corresponds to invariant I3 (Def. 2): s_stable ← s_spec_n.
+// Commit promotes the oldest queued speculative snapshot to stable after the
+// Raft quorum confirms a block.  This is the Commit operation of Definition 1
+// and corresponds to invariant I3 (Def. 2): s_stable ← s_spec_n.
 //
 // Called from the Raft apply goroutine after a successful consensus round.
+// Each call to Commit corresponds to exactly one proposed block (one queue entry).
 //
 // On follower nodes, writeBlock is called without a preceding BeginBatch/
-// ProcessBatch (followers do not run the constraint evaluator — they commit
-// whatever the leader admitted). In that case inBatch is false and Commit
-// is a no-op: the follower's stable state was set correctly by Init at
-// startup and will be rebuilt by Init again on re-election. A production
-// deployment would replay each committed block through the evaluator here;
-// for the Paper 3 benchmark (stable leader) this omission is inconsequential.
+// ProcessBatch (followers do not run the constraint evaluator). In that case
+// the queue is empty and Commit is a no-op.
 func (sm *StateManager) Commit() {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	if !sm.inBatch {
-		// Follower path: no speculative state was built for this block.
+	if len(sm.queue) == 0 {
+		// Follower path or all-rejected-batch path: no queued state to promote.
 		return
 	}
-	sm.stable = sm.speculative
-	sm.inBatch = false
+	sm.stable = sm.queue[0]
+	sm.queue = sm.queue[1:]
 }
 
-// Rollback discards the speculative state and restores the stable state after
-// a Raft round failure. This is the Rollback operation of Definition 1 and
-// corresponds to invariant I3 (Def. 2): discard s_spec, retain s_stable.
+// Rollback discards all in-flight speculative state and restores the stable
+// state after a Raft round failure (e.g. leader change).  This is the Rollback
+// operation of Definition 1 and corresponds to invariant I3 (Def. 2): discard
+// s_spec, retain s_stable.
 //
 // Called from the Raft apply goroutine on consensus failure.
 func (sm *StateManager) Rollback() {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	sm.speculative = sm.stable.Clone()
-	sm.inBatch = false
+	sm.queue = nil
 }
 
 // StableState returns a snapshot of the current stable state for inspection
