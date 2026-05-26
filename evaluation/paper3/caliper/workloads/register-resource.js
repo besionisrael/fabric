@@ -45,6 +45,8 @@ class RegisterResourceWorkload extends WorkloadModuleBase {
             conditions.zkProof = MOCK_ZK_PROOF;
         }
 
+        // RegisterResource args: [resourceID, resourceType, agentID, subsetGroup, conditionsJSON]
+        // subsetGroup = '' → no C_global quota group for throughput benchmark runs.
         const request = {
             contractId:        this.chaincodeId,
             contractFunction:  'RegisterResource',
@@ -52,7 +54,7 @@ class RegisterResourceWorkload extends WorkloadModuleBase {
                 resourceId,
                 'biobank-research',
                 `agent-w${this.workerIndex}`,
-                'active',
+                '',                    // subsetGroup: no quota constraint
                 JSON.stringify(conditions),
             ],
             timeout:  30,

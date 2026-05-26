@@ -43,10 +43,12 @@ class TransferResourceWorkload extends WorkloadModuleBase {
             this.pool.push(id);
             // Track who currently holds each resource; starts with the registration agent.
             this.holders.push(initHolder);
+            // RegisterResource args: [resourceID, resourceType, agentID, subsetGroup, conditionsJSON]
+            // subsetGroup = '' → no C_global quota for transfer throughput benchmark.
             await sutAdapter.sendRequests({
                 contractId:        this.chaincodeId,
                 contractFunction:  'RegisterResource',
-                contractArguments: [id, 'biobank-research', initHolder, 'active', conditions],
+                contractArguments: [id, 'biobank-research', initHolder, '', conditions],
                 timeout:  30,
                 readOnly: false,
             });
